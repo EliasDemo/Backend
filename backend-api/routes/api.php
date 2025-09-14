@@ -13,6 +13,8 @@ use App\Http\Controllers\Api\Escuela\EscuelaController;
 use App\Http\Controllers\Api\Facultad\FacultadController;
 use App\Http\Controllers\Api\Periodo\PeriodoController;
 use App\Http\Controllers\Api\Sede\SedeController;
+use App\Http\Controllers\Api\Coordinador\AsignacionEpController;
+use App\Http\Controllers\Api\Coordinador\EstudiantesAutoController;
 
 /*
 |--------------------------------------------------------------------------
@@ -118,14 +120,20 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::middleware(['auth:sanctum','role:Administrador'])->group(function () {
     // Admin
-    Route::patch('/admin/me', [AdminProfileController::class, 'update']);
-    Route::patch('/admin/password', [AdminProfileController::class, 'updatePassword']);
+        Route::patch('/admin/me', [AdminProfileController::class, 'update']);
+        Route::patch('/admin/password', [AdminProfileController::class, 'updatePassword']);
 
-    // Registro de roles operativos
-    Route::post('/register/coordinador', [CoordinadorRegistrationController::class, 'store']);
-    Route::post('/register/encargado',   [EncargadoRegistrationController::class, 'store']);
-    Route::post('/register/estudiante',  [EstudianteRegistrationController::class, 'store']);
-});
+        // Registro de roles operativos
+        Route::post('/register/coordinador', [CoordinadorRegistrationController::class, 'store']);
+        Route::post('/register/encargado',   [EncargadoRegistrationController::class, 'store']);
+        Route::post('/register/estudiante',  [EstudianteRegistrationController::class, 'store']);
+    });
+
+    Route::middleware(['auth:sanctum','role:Coordinador'])->group(function () {
+        Route::post('/coordinador/estudiantes/asignar-ep', [AsignacionEpController::class, 'assign']);
+        Route::post('/coordinador/estudiantes/upsert-asignar', [EstudiantesAutoController::class, 'upsertAndAssign']);
+
+    });
 
 
     /*
