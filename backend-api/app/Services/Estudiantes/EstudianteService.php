@@ -20,7 +20,6 @@ class EstudianteService
         return DB::transaction(function () use ($personaData, $academicData) {
             $persona = $this->personas->upsertFromDTO($personaData);
 
-            // Código de estudiante: usa el provisto o genera uno
             $codigo = $academicData['codigo'] ?? $this->makeCodigo();
 
             $row = Estudiante::firstOrCreate(
@@ -43,7 +42,6 @@ class EstudianteService
 
     private function makeCodigo(): string
     {
-        // Generador simple: E + año (2 dígitos) + random 4 dígitos (evita colisiones con loop)
         do {
             $candidate = 'E' . date('y') . random_int(1000, 9999);
         } while (Estudiante::where('codigo', $candidate)->exists());

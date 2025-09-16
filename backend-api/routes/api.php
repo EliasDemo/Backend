@@ -4,6 +4,8 @@ use App\Http\Controllers\Api\Admin\AdminProfileController;
 use App\Http\Controllers\Api\Registration\CoordinadorRegistrationController;
 use App\Http\Controllers\Api\Registration\EncargadoRegistrationController;
 use App\Http\Controllers\Api\Registration\EstudianteRegistrationController;
+use App\Http\Controllers\Api\RolePermission\RolePermissionController;
+use App\Http\Controllers\Api\User\UserDataController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -28,6 +30,9 @@ Route::post('/login', [LoginController::class, 'login']);
 | Rutas autenticadas (token Sanctum)
 |--------------------------------------------------------------------------
 */
+
+    Route::middleware('auth:sanctum')->get('/users', [UserDataController::class, 'show']);
+
 Route::middleware('auth:sanctum')->group(function () {
 
     // Usuario autenticado
@@ -134,6 +139,16 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/coordinador/estudiantes/upsert-asignar', [EstudiantesAutoController::class, 'upsertAndAssign']);
 
     });
+
+    Route::middleware('auth:sanctum')->group(function () {
+    Route::get('roles', [RolePermissionController::class, 'index']);
+    Route::post('roles', [RolePermissionController::class, 'createRole']);
+    Route::post('users/{userId}/roles', [RolePermissionController::class, 'assignRole']);
+    Route::post('permissions', [RolePermissionController::class, 'createPermission']);
+    Route::post('roles/{roleId}/permissions', [RolePermissionController::class, 'assignPermissionToRole']);
+    });
+
+
 
 
     /*

@@ -13,6 +13,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
+use Spatie\Permission\Traits\HasPermissions;
 use Spatie\Permission\Traits\HasRoles;
 
 /**
@@ -22,7 +23,9 @@ class User extends Authenticatable
 {
     use HasFactory, Notifiable, HasApiTokens;
     use HasAccountStatus, HasProfilePhoto, HasRecoveryCode;
-     use HasRoles;
+    use HasRoles;
+    use HasPermissions;
+
 
     /**
      * Campos asignables masivamente
@@ -35,6 +38,7 @@ class User extends Authenticatable
         'status',
         'recovery_code',
         'recovery_expires_at',
+        'persona_id',
     ];
 
     /**
@@ -95,7 +99,15 @@ class User extends Authenticatable
 
     public function persona()
     {
-        return $this->belongsTo(\App\Models\Persona::class);
+        return $this->belongsTo(Persona::class);
     }
+
+    public function escuelaProfesional()
+    {
+        // Verificamos si persona y estudiante existen antes de acceder a la escuelaProfesional
+        return $this->persona ? $this->persona->estudiante->escuelaProfesional : null;
+    }
+
+
 
 }

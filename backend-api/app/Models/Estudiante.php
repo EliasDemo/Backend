@@ -117,4 +117,10 @@ class Estudiante extends Model
         }
         $this->update(['estado' => $nuevo]);
     }
+
+     // Relación con la EscuelaProfesional
+    public function escuelaProfesional()
+    {
+        return $this->epSede->escuelaProfesional; // Accedemos a través de EpSede
+    }
 }
