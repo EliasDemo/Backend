@@ -18,6 +18,9 @@ class ExpedienteAcademico extends Model
         'grupo',
         'correo_institucional',
         'estado',
+        'rol',
+        'vigente_desde',
+        'vigente_hasta',
     ];
 
     /* =====================

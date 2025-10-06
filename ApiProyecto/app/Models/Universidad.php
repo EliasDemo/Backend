@@ -52,4 +52,22 @@ class Universidad extends Model
     {
         return $query->where('estado_licenciamiento', 'LICENCIA_OTORGADA');
     }
+
+        /* === Imágenes polimórficas === */
+    public function imagenes()
+    {
+        return $this->morphMany(Imagen::class, 'imageable');
+    }
+
+    // Último LOGO (titulo = 'LOGO')
+    public function logo()
+    {
+        return $this->morphOne(Imagen::class, 'imageable')->where('titulo', 'LOGO')->latestOfMany();
+    }
+
+    // Última PORTADA (titulo = 'PORTADA')
+    public function portada()
+    {
+        return $this->morphOne(Imagen::class, 'imageable')->where('titulo', 'PORTADA')->latestOfMany();
+    }
 }

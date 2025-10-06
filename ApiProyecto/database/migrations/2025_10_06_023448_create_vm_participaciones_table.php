@@ -40,8 +40,7 @@ return new class extends Migration
         $table->unique(['participable_type', 'participable_id', 'externo_documento'], 'uniq_vm_particip_extdoc');
 
         $table->timestamps();
-    });
-
+        });
     }
 
     public function down(): void
