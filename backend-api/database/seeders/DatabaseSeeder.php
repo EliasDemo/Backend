@@ -16,8 +16,6 @@ class DatabaseSeeder extends Seeder
 
         $this->call(PermissionSeeder::class);
 
-        $this->call(UserSeeder::class);
-
 
         $this->call([UniversidadSeeder::class,]);
 
@@ -30,5 +28,8 @@ class DatabaseSeeder extends Seeder
         $this->call(class: [EpSedeSeeder::class,]);
 
         $this->call([PeriodoAcademicoSeeder::class,]);
+        $this->call([EncargadoEpSedeDemoSeeder::class,]);
+
+
     }
 }

@@ -39,7 +39,7 @@ class PermissionSeeder extends Seeder
         $coordinador = Role::firstOrCreate(['name' => 'Coordinador',  'guard_name' => $guard]);
         $encargado   = Role::firstOrCreate(['name' => 'Encargado',    'guard_name' => $guard]);
 
-        // Asigna sets por rol
+
         $estudiante->syncPermissions([
             'horas.create','horas.update_own','horas.submit','horas.view_own','horas.delete_own',
             'report.view_own',
