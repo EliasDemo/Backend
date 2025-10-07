@@ -6,7 +6,6 @@ use App\Models\ExpedienteAcademico;
 
 class EpScopeService
 {
-    /** Coord/Encargado ACTIVO en esa EP_SEDE */
     public static function userManagesEpSede(int $userId, int $epSedeId): bool
     {
         return ExpedienteAcademico::query()
@@ -17,7 +16,6 @@ class EpScopeService
             ->exists();
     }
 
-    /** Coord/Encargado ACTIVO en alguna EP_SEDE de esa SEDE */
     public static function userManagesSede(int $userId, int $sedeId): bool
     {
         return ExpedienteAcademico::query()
@@ -28,7 +26,6 @@ class EpScopeService
             ->exists();
     }
 
-    /** Coord/Encargado ACTIVO en alguna EP_SEDE de esa FACULTAD */
     public static function userManagesFacultad(int $userId, int $facultadId): bool
     {
         return ExpedienteAcademico::query()
@@ -37,5 +34,18 @@ class EpScopeService
             ->whereIn('rol', ['COORDINADOR','ENCARGADO'])
             ->whereHas('epSede.escuelaProfesional', fn($q) => $q->where('facultad_id', $facultadId))
             ->exists();
+    }
+
+    /** 👇 NUEVO: devuelve los ep_sede_id que administra el usuario */
+    public static function epSedesIdsManagedBy(int $userId): array
+    {
+        return ExpedienteAcademico::query()
+            ->where('user_id', $userId)
+            ->where('estado', 'ACTIVO')
+            ->whereIn('rol', ['COORDINADOR','ENCARGADO'])
+            ->pluck('ep_sede_id')
+            ->unique()
+            ->values()
+            ->all();
     }
 }

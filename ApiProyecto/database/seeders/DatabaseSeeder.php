@@ -19,6 +19,8 @@ class DatabaseSeeder extends Seeder
         UniversidadSeeder::class,
         AcademicoBaseSeeder::class,
         DemoUsersSeeder::class,
+         MatriculasSeeder::class, // 👈 añade aquí
+
     ]);
     }
 }

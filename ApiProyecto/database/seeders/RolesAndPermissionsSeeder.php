@@ -43,10 +43,10 @@ class RolesAndPermissionsSeeder extends Seeder
         }
 
         // Crea roles
-        $administrador = Role::firstOrCreate(['name' => 'administrador', 'guard_name' => $guard]);
-        $coordinador   = Role::firstOrCreate(['name' => 'coordinador',   'guard_name' => $guard]);
-        $encargado     = Role::firstOrCreate(['name' => 'encargado',     'guard_name' => $guard]);
-        $estudiante    = Role::firstOrCreate(['name' => 'estudiante',    'guard_name' => $guard]);
+        $administrador = Role::firstOrCreate(['name' => 'ADMINISTRADOR', 'guard_name' => $guard]);
+        $coordinador   = Role::firstOrCreate(['name' => 'COORDINADOR',   'guard_name' => $guard]);
+        $encargado     = Role::firstOrCreate(['name' => 'ENCARGADO',     'guard_name' => $guard]);
+        $estudiante    = Role::firstOrCreate(['name' => 'ESTUDIANTE',    'guard_name' => $guard]);
 
         // Asigna permisos por rol (ajustable)
         // Admin: todo

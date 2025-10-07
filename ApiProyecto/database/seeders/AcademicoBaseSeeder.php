@@ -70,17 +70,59 @@ class AcademicoBaseSeeder extends Seeder
             'sede_id'                => $sedeJuliaca->id,
         ]);
 
-        // ===== PERÍODO ACADÉMICO (2025-2) =====
-        PeriodoAcademico::firstOrCreate(
-            ['codigo' => '2025-2'],
+        // ===== PERÍODOS ACADÉMICOS (2 antes, actual, 2 después) =====
+        $periodos = [
+            // 2 anteriores
             [
-                'anio'         => 2025,
-                'ciclo'        => 2,
-                'estado'       => 'EN_CURSO',
-                'es_actual'    => true,
-                'fecha_inicio' => '2025-08-01',
-                'fecha_fin'    => '2025-12-15',
-            ]
-        );
+                'codigo' => '2024-2',
+                'anio' => 2024, 'ciclo' => 2,
+                'estado' => 'CERRADO', 'es_actual' => false,
+                'fecha_inicio' => '2024-08-01', 'fecha_fin' => '2024-12-15',
+            ],
+            [
+                'codigo' => '2025-1',
+                'anio' => 2025, 'ciclo' => 1,
+                'estado' => 'CERRADO', 'es_actual' => false,
+                'fecha_inicio' => '2025-03-01', 'fecha_fin' => '2025-07-15',
+            ],
+
+            // actual
+            [
+                'codigo' => '2025-2',
+                'anio' => 2025, 'ciclo' => 2,
+                'estado' => 'EN_CURSO', 'es_actual' => true,
+                'fecha_inicio' => '2025-08-01', 'fecha_fin' => '2025-12-15',
+            ],
+
+            // 2 posteriores
+            [
+                'codigo' => '2026-1',
+                'anio' => 2026, 'ciclo' => 1,
+                'estado' => 'PLANIFICADO', 'es_actual' => false,
+                'fecha_inicio' => '2026-03-01', 'fecha_fin' => '2026-07-15',
+            ],
+            [
+                'codigo' => '2026-2',
+                'anio' => 2026, 'ciclo' => 2,
+                'estado' => 'PLANIFICADO', 'es_actual' => false,
+                'fecha_inicio' => '2026-08-01', 'fecha_fin' => '2026-12-15',
+            ],
+        ];
+
+        foreach ($periodos as $p) {
+            PeriodoAcademico::updateOrCreate(
+                ['anio' => $p['anio'], 'ciclo' => $p['ciclo']], // respeta unique(anio,ciclo)
+                [
+                    'codigo'        => $p['codigo'],
+                    'estado'        => $p['estado'],
+                    'es_actual'     => $p['es_actual'],
+                    'fecha_inicio'  => $p['fecha_inicio'],
+                    'fecha_fin'     => $p['fecha_fin'],
+                ]
+            );
+        }
+
+        // Asegura que solo 2025-2 quede marcado como actual
+        PeriodoAcademico::where('codigo', '!=', '2025-2')->update(['es_actual' => false]);
     }
 }

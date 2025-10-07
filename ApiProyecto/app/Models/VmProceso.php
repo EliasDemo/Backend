@@ -57,6 +57,13 @@ class VmProceso extends Model
         return $q->where('estado', 'EN_CURSO');
     }
 
+    protected static function booted()
+    {
+        static::deleting(function ($proceso) {
+            $proceso->sesiones()->delete();
+        });
+    }
+
     public function scopeOrdenados($q)
     {
         return $q->orderBy('orden');

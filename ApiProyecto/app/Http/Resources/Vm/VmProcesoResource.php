@@ -20,6 +20,8 @@ class VmProcesoResource extends JsonResource
             'orden' => $this->orden ? (int) $this->orden : null,
             'estado' => $this->estado,
             'created_at' => $this->created_at?->toDateTimeString(),
+
+            'sesiones' => VmSesionResource::collection($this->whenLoaded('sesiones')),
         ];
     }
 }

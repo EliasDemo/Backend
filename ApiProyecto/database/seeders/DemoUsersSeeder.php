@@ -32,38 +32,38 @@ class DemoUsersSeeder extends Seeder
 
         // ====== 1) ADMIN (sin expediente) ======
         $admin = $this->mkUser('admin', 'Admin', 'UPeU', 'admin@upeu.pe');
-        $admin->assignRole('administrador');
+        $admin->assignRole('ADMINISTRADOR');
 
         // ====== 2) STAFF: 2 coordinadores + 2 encargados (con expediente) ======
         // Coordinadores
         $coord1 = $this->mkUser('carlos', 'Carlos', 'Quispe', 'carlos@upeu.pe');
-        $coord1->assignRole('coordinador');
+        $coord1->assignRole('COORDINADOR');
         $this->vincularStaff($coord1, $epSede_SIS_Lima->id, 'COORDINADOR');
 
         $coord2 = $this->mkUser('maria', 'María', 'Huamán', 'maria@upeu.pe');
-        $coord2->assignRole('coordinador');
+        $coord2->assignRole('COORDINADOR');
         $this->vincularStaff($coord2, $epSede_ARQ_Lima->id, 'COORDINADOR');
 
         // Encargados
         $enc1 = $this->mkUser('luis', 'Luis', 'Pérez', 'luis@upeu.pe');
-        $enc1->assignRole('encargado');
+        $enc1->assignRole('ENCARGADO');
         $this->vincularStaff($enc1, $epSede_SIS_Lima->id, 'ENCARGADO'); // mismo EP que coord1, permitido (único por rol)
 
         $enc2 = $this->mkUser('ana', 'Ana', 'Torres', 'ana@upeu.pe');
-        $enc2->assignRole('encargado');
+        $enc2->assignRole('ENCARGADO');
         $this->vincularStaff($enc2, $epSede_ENF_Juliaca->id, 'ENCARGADO');
 
         // ====== 3) ESTUDIANTES: 3 EP distintas ======
         $est1 = $this->mkUser('jorge', 'Jorge', 'Ramos', 'jorge@upeu.edu.pe');
-        $est1->assignRole('estudiante');
+        $est1->assignRole('ESTUDIANTE');
         $this->vincularEstudiante($est1, $epSede_SIS_Lima->id, $periodo, 'SIS2025-0001', 'jorge.ramos@upeu.edu.pe', 'A1');
 
         $est2 = $this->mkUser('sofia', 'Sofía', 'López', 'sofia@upeu.edu.pe');
-        $est2->assignRole('estudiante');
+        $est2->assignRole('ESTUDIANTE');
         $this->vincularEstudiante($est2, $epSede_ARQ_Lima->id, $periodo, 'ARQ2025-0001', 'sofia.lopez@upeu.edu.pe', 'B1');
 
         $est3 = $this->mkUser('pedro', 'Pedro', 'Flores', 'pedro@upeu.edu.pe');
-        $est3->assignRole('estudiante');
+        $est3->assignRole('ESTUDIANTE');
         $this->vincularEstudiante($est3, $epSede_ENF_Juliaca->id, $periodo, 'ENF2025-0001', 'pedro.flores@upeu.edu.pe', 'C1');
     }
 
