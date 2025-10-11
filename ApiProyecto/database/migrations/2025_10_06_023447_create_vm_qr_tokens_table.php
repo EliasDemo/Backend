@@ -20,6 +20,9 @@ return new class extends Migration
 
             $table->string('token')->unique(); // UK global
 
+            // Tipo de ventana: QR (alumno escanea) o MANUAL (staff llama lista)
+            $table->enum('tipo', ['QR','MANUAL'])->default('QR');
+
             // Ventanas de uso
             $table->timestamp('usable_from')->nullable();
             $table->timestamp('expires_at')->nullable();
@@ -29,6 +32,14 @@ return new class extends Migration
             $table->integer('usos')->default(0);
             $table->boolean('activo')->default(true);
 
+            // Geocerca (opcional)
+            $table->decimal('lat', 10, 7)->nullable();
+            $table->decimal('lng', 10, 7)->nullable();
+            $table->unsignedInteger('radio_m')->nullable();
+
+            // Extras
+            $table->json('meta')->nullable();
+
             // Quién lo creó (opcional)
             $table->unsignedBigInteger('creado_por')->nullable();
             $table->foreign('creado_por')
@@ -37,7 +48,7 @@ return new class extends Migration
                 ->onDelete('set null');
 
             // Índices de apoyo
-            $table->index('sesion_id');
+            $table->index(['sesion_id','tipo']);
             $table->index('activo');
             $table->index('expires_at');
 

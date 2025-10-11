@@ -46,10 +46,11 @@ return new class extends Migration
 
             $table->unsignedSmallInteger('minutos_validados')->default(0);
 
+            // Detalles opcionales (geo/ip/ua, etc.)
+            $table->json('meta')->nullable();
+
             // ===== Índices / reglas =====
-            // Un registro de asistencia por sesión y expediente
             $table->unique(['sesion_id', 'expediente_id']);
-            // Si usas participaciones, evita duplicar dentro de la sesión
             $table->unique(['sesion_id', 'participacion_id']);
 
             $table->index('metodo');

@@ -1,7 +1,10 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Providers;
 
+use App\Models\User;
 use App\Models\EpSede;
 use App\Models\Facultad;
 use App\Models\Sede;
@@ -11,7 +14,7 @@ use App\Models\VmProyecto;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Database\Eloquent\Relations\Relation;
 
-class AppServiceProvider extends ServiceProvider
+final class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
@@ -20,21 +23,36 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        Relation::enforceMorphMap([
-            // 🔹 Spatie Permission necesita esto para model_has_roles / model_has_permissions
-            'user'       => \App\Models\User::class,
-
-
-
-            // Para tus relaciones polimórficas
+        // ✅ Aliases CANÓNICOS (lo que se guardará de ahora en adelante)
+        $canonical = [
+            'user'        => User::class,        // Spatie model_has_* agradece un alias estable
             'vm_proyecto' => VmProyecto::class,
             'vm_proceso'  => VmProceso::class,
             'vm_evento'   => VmEvento::class,
-
-            // Solo si realmente aparecen como type en alguna relación polimórfica tuya
             'ep_sede'     => EpSede::class,
             'sede'        => Sede::class,
             'facultad'    => Facultad::class,
-        ]);
+        ];
+
+        // ♻️ Compatibilidad hacia atrás (tipos que ya podrían existir en la BD)
+        $backwardCompatibility = [
+            // FQCN que pudieron guardarse antes
+            'App\\Models\\User'       => User::class,
+            'App\\Models\\VmProyecto' => VmProyecto::class,
+            'App\\Models\\VmProceso'  => VmProceso::class,
+            'App\\Models\\VmEvento'   => VmEvento::class,
+            'App\\Models\\EpSede'     => EpSede::class,
+            'App\\Models\\Sede'       => Sede::class,
+            'App\\Models\\Facultad'   => Facultad::class,
+
+            // Aliases antiguos en PascalCase
+            'VmProceso'               => VmProceso::class,
+            'VmEvento'                => VmEvento::class,
+        ];
+
+        // Importante: los canónicos primero ⇒ Eloquent usará esos al guardar.
+        $map = $canonical + $backwardCompatibility;
+
+        Relation::enforceMorphMap($map);
     }
 }

@@ -151,7 +151,283 @@ class InscripcionProyectoController extends Controller
         ], 201);
     }
 
+    /**
+     * GET /api/vm/proyectos/{proyecto}/inscritos
+     */
+    public function listarInscritos(Request $request, VmProyecto $proyecto): JsonResponse
+    {
+        $tipo = $this->normalizarTipo($proyecto);
+        $estadoFiltro = strtoupper((string) $request->query('estado', 'TODOS'));
+        $roles = (array) $request->query('roles', []); // ej: roles[]=ALUMNO
+
+        $q = VmParticipacion::query()
+            ->where('participable_type', VmProyecto::class)
+            ->where('participable_id', $proyecto->id)
+            ->with(['expediente.user']);
+
+        if (!empty($roles)) {
+            $q->whereIn('rol', $roles);
+        }
+
+        if ($estadoFiltro === 'ACTIVOS') {
+            $q->whereIn('estado', ['INSCRITO','CONFIRMADO']);
+        } elseif ($estadoFiltro === 'FINALIZADOS') {
+            $q->where('estado', 'FINALIZADO');
+        }
+
+        $participaciones = $q->orderBy('id')->get();
+
+        // Sumatoria de minutos en bloque (evita N+1)
+        $expIds = $participaciones->pluck('expediente_id')->all();
+        $minByExp = $this->minutosValidadosProyectoBulk($proyecto->id, $expIds);
+
+        $reqMin = $this->minutosRequeridosProyecto($proyecto);
+
+        $items = $participaciones->map(function ($p) use ($reqMin, $minByExp) {
+            $acum = (int) ($minByExp[$p->expediente_id] ?? 0);
+
+            // Datos de usuario (first_name, last_name, celular)
+            $u = optional(optional($p->expediente)->user);
+            $fullName = trim(($u->first_name ?? '').' '.($u->last_name ?? '')) ?: null;
+            $userId = $u->id ?? null;
+
+            return [
+                'participacion_id' => (int) $p->id,
+                'rol'              => $p->rol,
+                'estado'           => $p->estado,
+                'expediente'       => [
+                    'id'     => (int) $p->expediente_id,
+                    'codigo' => optional($p->expediente)->codigo_estudiante,
+                    'grupo'  => optional($p->expediente)->grupo,
+                    'usuario'=> [
+                        'id'         => $userId ? (int)$userId : null,
+                        'first_name' => $u->first_name,
+                        'last_name'  => $u->last_name,
+                        'full_name'  => $fullName,
+                        'email'      => $u->email,
+                        'celular'    => $u->celular,
+                    ],
+                ],
+                'requerido_min' => $reqMin,
+                'acumulado_min' => $acum,
+                'faltan_min'    => max(0, $reqMin - $acum),
+                'porcentaje'    => $reqMin ? (int) round(($acum / $reqMin) * 100) : null,
+                'finalizado'    => strtoupper($p->estado) === 'FINALIZADO' || $acum >= $reqMin,
+            ];
+        })->values();
+
+        $resumen = [
+            'total'       => $items->count(),
+            'activos'     => $items->whereIn('estado', ['INSCRITO','CONFIRMADO'])->count(),
+            'finalizados' => $items->filter(fn($i) => $i['finalizado'])->count(),
+        ];
+
+        return response()->json([
+            'ok'   => true,
+            'code' => 'ENROLLED_LIST',
+            'data' => [
+                'proyecto' => ['id' => (int) $proyecto->id, 'tipo' => $tipo, 'nivel' => (int) $proyecto->nivel],
+                'resumen'  => $resumen,
+                'inscritos'=> $items,
+            ],
+        ], 200);
+    }
+
+    /**
+     * GET /api/vm/proyectos/{proyecto}/candidatos
+     */
+    public function listarCandidatos(Request $request, VmProyecto $proyecto): JsonResponse
+    {
+        $tipo = $this->normalizarTipo($proyecto);
+        $soloElegibles = filter_var($request->query('solo_elegibles', 'true'), FILTER_VALIDATE_BOOLEAN);
+        $limit = (int) $request->query('limit', 0);
+        $queryText = trim((string) $request->query('q', ''));
+
+        // Base: expedientes ACTIVO de la misma EP_SEDE
+        $expedientes = ExpedienteAcademico::query()
+            ->where('ep_sede_id', $proyecto->ep_sede_id)
+            ->activos()
+            ->with('user')
+            ->when($queryText !== '', function ($q) use ($queryText) {
+                $q->where(function ($qq) use ($queryText) {
+                    $qq->where('codigo_estudiante', 'like', "%{$queryText}%")
+                       ->orWhereHas('user', function ($u) use ($queryText) {
+                           $u->where('first_name', 'like', "%{$queryText}%")
+                             ->orWhere('last_name', 'like', "%{$queryText}%")
+                             ->orWhere(DB::raw("CONCAT(first_name,' ',last_name)"), 'like', "%{$queryText}%")
+                             ->orWhere('email', 'like', "%{$queryText}%")
+                             ->orWhere('celular', 'like', "%{$queryText}%");
+                       });
+                });
+            })
+            ->orderBy('id')
+            ->cursor();
+
+        $candidatos = [];
+        $descartados = [];
+
+        // Si el proyecto no está activo, nadie es elegible (acompañamos con motivos)
+        $proyectoActivo = in_array($proyecto->estado, ['PLANIFICADO','EN_CURSO']);
+
+        foreach ($expedientes as $exp) {
+
+            // Ya inscrito en este mismo proyecto
+            $ya = VmParticipacion::where([
+                'participable_type' => VmProyecto::class,
+                'participable_id'   => $proyecto->id,
+                'expediente_id'     => $exp->id,
+            ])->exists();
+
+            if ($ya) {
+                if (!$soloElegibles) {
+                    $descartados[] = [
+                        'expediente_id' => (int) $exp->id,
+                        'codigo'        => $exp->codigo_estudiante,
+                        'razon'         => 'ALREADY_ENROLLED',
+                    ];
+                }
+                continue;
+            }
+
+            if (!$proyectoActivo) {
+                if (!$soloElegibles) {
+                    $descartados[] = [
+                        'expediente_id' => (int) $exp->id,
+                        'codigo'        => $exp->codigo_estudiante,
+                        'razon'         => 'PROJECT_NOT_ACTIVE',
+                        'meta'          => ['estado' => $proyecto->estado],
+                    ];
+                }
+                continue;
+            }
+
+            if ($tipo === 'LIBRE') {
+                $u = optional($exp->user);
+                $fullName = trim(($u->first_name ?? '').' '.($u->last_name ?? '')) ?: null;
+
+                $candidatos[] = [
+                    'expediente_id' => (int) $exp->id,
+                    'codigo'        => $exp->codigo_estudiante,
+                    'usuario'       => [
+                        'id'         => $u->id ? (int)$u->id : null,
+                        'first_name' => $u->first_name,
+                        'last_name'  => $u->last_name,
+                        'full_name'  => $fullName,
+                        'email'      => $u->email,
+                        'celular'    => $u->celular,
+                    ],
+                    'motivo'        => 'ELEGIBLE_LIBRE',
+                ];
+            } else { // VINCULADO
+                // A) No debe haber VINCULADO pendiente en cualquier nivel
+                if ($pend = $this->buscarPendienteVinculado($exp->id, $proyecto->ep_sede_id)) {
+                    if (!$soloElegibles) {
+                        $reqMin = $this->minutosRequeridosProyecto($pend['proyecto']);
+                        $acum   = $this->minutosValidadosProyecto($pend['proyecto']->id, $exp->id);
+                        $descartados[] = [
+                            'expediente_id' => (int) $exp->id,
+                            'codigo'        => $exp->codigo_estudiante,
+                            'razon'         => 'PENDING_LINKED_PREV',
+                            'meta'          => [
+                                'proyecto_id'   => (int) $pend['proyecto']->id,
+                                'nivel'         => (int) $pend['proyecto']->nivel,
+                                'periodo'       => $pend['periodo'],
+                                'requerido_min' => $reqMin,
+                                'acumulado_min' => $acum,
+                                'faltan_min'    => max(0, $reqMin - $acum),
+                                'cerrado'       => in_array($pend['proyecto']->estado, ['CERRADO','CANCELADO']),
+                            ],
+                        ];
+                    }
+                    continue;
+                }
+
+                // B) Si nivel > 1, debe existir nivel-1 finalizado
+                if ((int) $proyecto->nivel > 1 &&
+                    !$this->existeNivelFinalizado($exp->id, $proyecto->ep_sede_id, (int) $proyecto->nivel - 1)) {
+                    if (!$soloElegibles) {
+                        $descartados[] = [
+                            'expediente_id' => (int) $exp->id,
+                            'codigo'        => $exp->codigo_estudiante,
+                            'razon'         => 'LEVEL_NOT_ALLOWED',
+                            'meta'          => ['nivel_requerido' => (int) $proyecto->nivel - 1],
+                        ];
+                    }
+                    continue;
+                }
+
+                // C) No debe haber completado este mismo nivel antes
+                if ($this->existeNivelFinalizado($exp->id, $proyecto->ep_sede_id, (int) $proyecto->nivel)) {
+                    if (!$soloElegibles) {
+                        $descartados[] = [
+                            'expediente_id' => (int) $exp->id,
+                            'codigo'        => $exp->codigo_estudiante,
+                            'razon'         => 'LEVEL_ALREADY_COMPLETED',
+                            'meta'          => ['nivel' => (int) $proyecto->nivel],
+                        ];
+                    }
+                    continue;
+                }
+
+                $u = optional($exp->user);
+                $fullName = trim(($u->first_name ?? '').' '.($u->last_name ?? '')) ?: null;
+
+                $candidatos[] = [
+                    'expediente_id' => (int) $exp->id,
+                    'codigo'        => $exp->codigo_estudiante,
+                    'usuario'       => [
+                        'id'         => $u->id ? (int)$u->id : null,
+                        'first_name' => $u->first_name,
+                        'last_name'  => $u->last_name,
+                        'full_name'  => $fullName,
+                        'email'      => $u->email,
+                        'celular'    => $u->celular,
+                    ],
+                    'motivo'        => 'ELEGIBLE_VINCULADO',
+                ];
+            }
+
+            if ($limit > 0 && count($candidatos) >= $limit) {
+                break;
+            }
+        }
+
+        return response()->json([
+            'ok'   => true,
+            'code' => 'CANDIDATES_LIST',
+            'data' => [
+                'proyecto'           => ['id' => (int) $proyecto->id, 'tipo' => $tipo, 'nivel' => (int) $proyecto->nivel],
+                'candidatos_total'   => count($candidatos),
+                'descartados_total'  => $soloElegibles ? 0 : count($descartados),
+                'candidatos'         => $candidatos,
+                'no_elegibles'       => $soloElegibles ? [] : $descartados,
+            ],
+        ], 200);
+    }
+
     // ───────────────────────── Helpers ─────────────────────────
+
+    private function normalizarTipo(VmProyecto $proyecto): string
+    {
+        $tipo = strtoupper((string) $proyecto->tipo);
+        return $tipo === 'PROYECTO' ? 'VINCULADO' : $tipo;
+    }
+
+    protected function minutosValidadosProyectoBulk(int $proyectoId, array $expedienteIds): array
+    {
+        if (empty($expedienteIds)) return [];
+        return VmAsistencia::query()
+            ->select('expediente_id', DB::raw('COALESCE(SUM(minutos_validados),0) as total_min'))
+            ->where('estado', 'VALIDADO')
+            ->whereIn('expediente_id', $expedienteIds)
+            ->whereHas('sesion', function ($q) use ($proyectoId) {
+                $q->where('sessionable_type', VmProceso::class)
+                  ->whereHas('sessionable', fn($qq) => $qq->where('proyecto_id', $proyectoId));
+            })
+            ->groupBy('expediente_id')
+            ->pluck('total_min', 'expediente_id')
+            ->toArray();
+    }
 
     protected function buscarPendienteVinculado(int $expedienteId, int $epSedeId): ?array
     {
@@ -229,7 +505,6 @@ class InscripcionProyectoController extends Controller
             ->sum('minutos_validados');
     }
 
-    // Respuesta de error consistente
     private function fail(string $code, string $message, int $status = 422, array $meta = []): JsonResponse
     {
         return response()->json([

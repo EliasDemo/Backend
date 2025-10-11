@@ -18,6 +18,7 @@ class VmProyectoResource extends JsonResource
             'tipo'       => $this->tipo,
             'modalidad'  => $this->modalidad,
             'estado'     => $this->estado,
+            'descripcion'=> $this->descripcion, // 👈 AQUI
 
             // 👇 si es NULL en DB (LIBRE), retorna null; si no, int
             'nivel'      => $this->nivel !== null ? (int) $this->nivel : null,

@@ -56,6 +56,8 @@ class Imagen extends Model
         return $q->where('subido_por', $userId);
     }
 
+
+
     /* =====================
      | Helpers
      |=====================*/

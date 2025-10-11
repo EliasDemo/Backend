@@ -24,6 +24,12 @@ use App\Http\Controllers\Api\Vm\EditarProyectoController;
 use App\Http\Controllers\Api\Vm\InscripcionProyectoController;
 use App\Http\Controllers\Api\Vm\ProyectoImagenController;
 
+// NUEVO: Agenda (alumno/staff)
+use App\Http\Controllers\Api\Vm\AgendaController;
+
+// NUEVO: Asistencia (QR / Manual / Reportes)
+use App\Http\Controllers\Api\Vm\AsistenciasController;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Autenticación básica / perfil
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,6 +95,15 @@ Route::middleware(['auth:sanctum'])->prefix('vm')->group(function () {
     Route::post('/proyectos/{proyecto}/inscribirse', [InscripcionProyectoController::class, 'inscribirProyecto'])
         ->whereNumber('proyecto')
         ->name('vm.proyectos.inscribirse');
+
+    // NUEVO: Agenda Alumno (dashboard estudiante)
+    Route::get('/alumno/agenda', [AgendaController::class, 'agendaAlumno'])
+        ->name('vm.alumno.agenda');
+
+    // NUEVO: Check-in por QR (alumno escanea QR)
+    Route::post('/sesiones/{sesion}/check-in/qr', [AsistenciasController::class, 'checkInPorQr'])
+        ->whereNumber('sesion')
+        ->name('vm.sesiones.checkin-qr');
 });
 
 /**
@@ -109,6 +124,14 @@ Route::middleware(['auth:sanctum','role:COORDINADOR|ENCARGADO'])->prefix('vm')->
     Route::delete('/proyectos/{proyecto}',      [EditarProyectoController::class, 'destroy'])->whereNumber('proyecto');
     Route::put   ('/proyectos/{proyecto}/publicar', [ProyectoController::class, 'publicar'])->whereNumber('proyecto');
 
+    Route::get('/proyectos/{proyecto}/inscritos',  [InscripcionProyectoController::class, 'listarInscritos'])
+        ->whereNumber('proyecto')
+        ->name('vm.proyectos.inscritos');
+
+    Route::get('/proyectos/{proyecto}/candidatos', [InscripcionProyectoController::class, 'listarCandidatos'])
+        ->whereNumber('proyecto')
+        ->name('vm.proyectos.candidatos');
+
     // Imágenes
     Route::get   ('/proyectos/{proyecto}/imagenes',          [ProyectoImagenController::class, 'index'])->whereNumber('proyecto');
     Route::post  ('/proyectos/{proyecto}/imagenes',          [ProyectoImagenController::class, 'store'])->whereNumber('proyecto');
@@ -124,6 +147,39 @@ Route::middleware(['auth:sanctum','role:COORDINADOR|ENCARGADO'])->prefix('vm')->
     // Eventos
     Route::post('/eventos', [EventoController::class, 'store']);
     Route::post('/eventos/{evento}/sesiones/batch', [EventoSesionController::class, 'storeBatch'])->whereNumber('evento');
+
+    // ─── NUEVO: Agenda Staff (dashboard coordinador/encargado) ───
+    Route::get('/staff/agenda', [AgendaController::class, 'agendaStaff'])
+        ->name('vm.staff.agenda');
+
+    // ─── NUEVO: ASISTENCIAS (staff) ───
+    // Abrir ventana QR (30 min por defecto)
+    Route::post('/sesiones/{sesion}/qr', [AsistenciasController::class, 'generarQr'])
+        ->whereNumber('sesion')
+        ->name('vm.sesiones.abrir-qr');
+
+    // Activar ventana de llamado manual (30 min por defecto)
+    Route::post('/sesiones/{sesion}/activar-manual', [AsistenciasController::class, 'activarManual'])
+        ->whereNumber('sesion')
+        ->name('vm.sesiones.activar-manual');
+
+    // Check-in manual por DNI/Código
+    Route::post('/sesiones/{sesion}/check-in/manual', [AsistenciasController::class, 'checkInManual'])
+        ->whereNumber('sesion')
+        ->name('vm.sesiones.checkin-manual');
+
+    // Listado de asistencias por sesión
+    Route::get('/sesiones/{sesion}/asistencias', [AsistenciasController::class, 'listarAsistencias'])
+        ->whereNumber('sesion')
+        ->name('vm.sesiones.asistencias');
+
+    // Reporte CSV/JSON de asistencias
+    Route::get('/sesiones/{sesion}/asistencias/reporte', [AsistenciasController::class, 'reporte'])
+        ->whereNumber('sesion')
+        ->name('vm.sesiones.asistencias.reporte');
+
+    // Validación masiva (y opcional creación de registro_horas)
+    Route::post('/sesiones/{sesion}/validar', [AsistenciasController::class, 'validarAsistencias'])
+        ->whereNumber('sesion')
+        ->name('vm.sesiones.validar');
 });
-
-

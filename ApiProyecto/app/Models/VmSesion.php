@@ -21,10 +21,23 @@ class VmSesion extends Model
         'estado',
     ];
 
+    protected static function booted()
+    {
+        static::saved(function (self $s) {
+            app(\App\Services\Vm\EstadoService::class)->recalcOwner($s->sessionable);
+        });
+        static::deleted(function (self $s) {
+            app(\App\Services\Vm\EstadoService::class)->recalcOwner($s->sessionable);
+        });
+    }
+
+
     protected $casts = [
         'fecha' => 'date',
         // 'hora_inicio' y 'hora_fin' quedan como string (TIME en DB)
     ];
+
+
 
     /* =====================
      | Relaciones

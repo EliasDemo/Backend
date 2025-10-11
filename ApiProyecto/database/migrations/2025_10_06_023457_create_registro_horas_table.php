@@ -31,13 +31,13 @@ return new class extends Migration
                 ->onDelete('restrict');
 
             // ===== Datos principales =====
-            $table->date('fecha');                        // día trabajado
-            $table->unsignedSmallInteger('minutos');      // minutos a validar
-            $table->string('actividad');                  // breve descripción
+            $table->date('fecha');                   // día trabajado
+            $table->unsignedSmallInteger('minutos'); // minutos a validar
+            $table->string('actividad');             // breve descripción
 
-            // Estado (ajusta valores si usas otro catálogo)
+            // Estado
             $table->enum('estado', ['PENDIENTE', 'APROBADO', 'RECHAZADO', 'ANULADO'])
-                  ->default('PENDIENTE');
+                  ->default('APROBADO'); // al validar asistencia, lo marcamos APROBADO
 
             // Polimórfica: vínculo a Proyecto/Evento u otros
             $table->unsignedBigInteger('vinculable_id');
@@ -57,6 +57,7 @@ return new class extends Migration
                 ->onDelete('set null');
 
             // ===== Índices =====
+            $table->unique('asistencia_id', 'uq_reg_horas_asistencia'); // evita duplicados por asistencia
             $table->index('expediente_id');
             $table->index('ep_sede_id');
             $table->index('periodo_id');
@@ -64,7 +65,6 @@ return new class extends Migration
             $table->index('estado');
             $table->index(['vinculable_type', 'vinculable_id']);
             $table->index('sesion_id');
-            $table->index('asistencia_id');
 
             $table->timestamps();
         });
