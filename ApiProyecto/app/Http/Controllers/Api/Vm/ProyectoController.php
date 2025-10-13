@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Vm;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Vm\ProyectoStoreRequest;
+use App\Http\Resources\Vm\VmProcesoResource;
 use App\Http\Resources\Vm\VmProyectoResource;
 use App\Models\ExpedienteAcademico;
 use App\Models\PeriodoAcademico;
@@ -28,6 +29,14 @@ class ProyectoController extends Controller
         $perId  = $request->get('periodo_id');
         $epId   = $request->get('ep_sede_id');
 
+        // Nuevo: expand flags -> "expand=procesos,sesiones" o "expand=arbol"
+        $expand = collect(
+            array_filter(array_map('trim', explode(',', strtolower($request->query('expand', '')))))
+        );
+        $withTree   = $request->boolean('with_tree', false) || $expand->contains('arbol');
+        $withProcs  = $withTree || $expand->contains('procesos');
+        $withSess   = $withTree || $expand->contains('sesiones');
+
         $query = VmProyecto::query()
             ->with(['imagenes' => fn ($q2) => $q2->latest()->limit(5)])
             ->withCount('imagenes as imagenes_total');
@@ -37,6 +46,7 @@ class ProyectoController extends Controller
         if (!empty($ids)) {
             $query->whereIn('ep_sede_id', $ids);
         } else {
+            // sin permisos: no devuelve nada
             $query->whereRaw('1=0');
         }
 
@@ -51,13 +61,73 @@ class ProyectoController extends Controller
         if (!empty($perId))     $query->where('periodo_id', $perId);
         if (!empty($epId))      $query->where('ep_sede_id', $epId);
 
+        // Opcional: engancha árbol (procesos/sesiones) sólo si lo piden
+        if ($withProcs) {
+            $query->with(['procesos' => function ($q) {
+                $q->orderBy('orden')->orderBy('id');
+            }]);
+        }
+        if ($withSess) {
+            $query->with(['procesos.sesiones' => function ($q) {
+                $q->orderBy('fecha')->orderBy('hora_inicio');
+            }]);
+        }
+
         $page = $query->latest('id')->paginate(15);
 
-        $page->getCollection()->transform(
-            fn ($item) => (new VmProyectoResource($item))->toArray($request)
-        );
+        // Transform: si pidieron árbol, devuelve mismo shape que "show"
+        $page->getCollection()->transform(function ($item) use ($request, $withProcs, $withSess) {
+            $base = (new VmProyectoResource($item))->toArray($request);
+
+            if ($withProcs || $withSess) {
+                // Igual que "show": { proyecto, procesos: [VmProcesoResource...] }
+                return [
+                    'proyecto' => $base,
+                    'procesos' => VmProcesoResource::collection($item->procesos)->toArray($request),
+                ];
+            }
+
+            // Sin árbol: sólo el proyecto plano (ligero)
+            return $base;
+        });
 
         return response()->json(['ok' => true, 'data' => $page], 200);
+    }
+
+
+    public function show(VmProyecto $proyecto): JsonResponse
+    {
+        $user = request()->user();
+
+        // 1) Debe pertenecer a la misma EP_SEDE del proyecto
+        if (!EpScopeService::userBelongsToEpSede($user->id, (int) $proyecto->ep_sede_id)) {
+            return response()->json(['ok'=>false,'message'=>'No perteneces a esta EP_SEDE.'], 403);
+        }
+
+        // 2) Si está en PLANIFICADO, solo staff o alumno inscrito lo ven
+        $inscrito = $proyecto->participaciones()
+            ->where('expediente_id', EpScopeService::expedienteId($user->id)) // ajusta si tu servicio expone ese método
+            ->exists();
+
+        if ($proyecto->estado === 'PLANIFICADO'
+            && !$inscrito
+            && !EpScopeService::userManagesEpSede($user->id, (int)$proyecto->ep_sede_id)) {
+            return response()->json(['ok'=>false,'message'=>'Proyecto aún no publicado.'], 403);
+        }
+
+        $proyecto->load([
+            'imagenes',
+            'procesos' => fn($q) => $q->orderBy('orden')->orderBy('id'),
+            'procesos.sesiones' => fn($q) => $q->orderBy('fecha')->orderBy('hora_inicio'),
+        ]);
+
+        return response()->json([
+            'ok'   => true,
+            'data' => [
+                'proyecto' => new VmProyectoResource($proyecto),
+                'procesos' => VmProcesoResource::collection($proyecto->procesos),
+            ],
+        ]);
     }
 
     /** GET /api/vm/proyectos/alumno (listado para estudiante) */

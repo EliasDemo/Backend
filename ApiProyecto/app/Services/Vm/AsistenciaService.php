@@ -20,25 +20,59 @@ class AsistenciaService
 {
     public const WINDOW_MINUTES = 30;
 
-    public function generarToken(VmSesion $sesion, string $tipo = 'QR', ?array $geo = null, ?int $maxUsos = null, ?int $creadoPor = null): VmQrToken
-    {
+    // =========================
+    // TOKENS
+    // =========================
+    public function generarToken(
+        VmSesion $sesion,
+        string $tipo = 'QR',
+        ?array $geo = null,
+        ?int $maxUsos = null,
+        ?int $creadoPor = null
+    ): VmQrToken {
         $now = now();
+
         return DB::transaction(function () use ($sesion, $tipo, $geo, $maxUsos, $creadoPor, $now) {
-            return VmQrToken::create([
-                'tipo'        => $tipo, // 'QR' | 'MANUAL'
+            $t = new VmQrToken();
+            $t->forceFill([
                 'sesion_id'   => $sesion->id,
-                'token'       => bin2hex(random_bytes(16)),
+                'token'       => bin2hex(random_bytes(16)), // 32 chars hex
+                'tipo'        => $tipo,                     // QR | MANUAL
                 'usable_from' => $now,
                 'expires_at'  => $now->copy()->addMinutes(self::WINDOW_MINUTES),
                 'max_usos'    => $maxUsos,
                 'usos'        => 0,
                 'activo'      => true,
                 'creado_por'  => $creadoPor,
-                'lat'         => $geo['lat'] ?? null,
-                'lng'         => $geo['lng'] ?? null,
-                'radio_m'     => $geo['radio_m'] ?? null,
+                'lat'         => $geo['lat']    ?? null,
+                'lng'         => $geo['lng']    ?? null,
+                'radio_m'     => $geo['radio_m']?? null,
                 'meta'        => null,
-            ]);
+            ])->save();
+
+            return $t->refresh();
+        });
+    }
+
+    /** Token MANUAL alineado a la sesión (±1h respecto al horario de la sesión). */
+    public function generarTokenManualAlineado(VmSesion $sesion, ?int $creadoPor = null): VmQrToken
+    {
+        [$start, $end] = $this->timeWindowForSesion($sesion);
+
+        return DB::transaction(function () use ($sesion, $creadoPor, $start, $end) {
+            $t = new VmQrToken();
+            $t->forceFill([
+                'sesion_id'   => $sesion->id,
+                'token'       => bin2hex(random_bytes(16)),
+                'tipo'        => 'MANUAL',
+                'usable_from' => $start,
+                'expires_at'  => $end,
+                'max_usos'    => null,
+                'usos'        => 0,
+                'activo'      => true,
+                'creado_por'  => $creadoPor,
+            ])->save();
+            return $t->refresh();
         });
     }
 
@@ -48,7 +82,7 @@ class AsistenciaService
         if (!$t->activo || ($t->usable_from && $now->lt($t->usable_from)) || ($t->expires_at && $now->gt($t->expires_at))) {
             throw ValidationException::withMessages(['token' => 'VENTANA_INVALIDA']);
         }
-        if ($t->max_usos !== null && $t->usos >= $t->max_usos) {
+        if (!is_null($t->max_usos) && $t->usos >= $t->max_usos) {
             throw ValidationException::withMessages(['token' => 'VENTANA_SIN_CUPO']);
         }
     }
@@ -59,7 +93,7 @@ class AsistenciaService
         if ($lat === null || $lng === null) {
             throw ValidationException::withMessages(['geo' => 'GEO_REQUERIDA']);
         }
-        $dist = $this->haversine((float)$t->lat, (float)$t->lng, $lat, $lng);
+        $dist = $this->haversine((float)$t->lat, (float)$t->lng, (float)$lat, (float)$lng);
         if ($dist > (int)$t->radio_m) {
             throw ValidationException::withMessages(['geo' => 'FUERA_DE_RANGO']);
         }
@@ -67,14 +101,113 @@ class AsistenciaService
 
     private function haversine(float $lat1, float $lng1, float $lat2, float $lng2): int
     {
-        $earth = 6371000; // m
+        $R = 6371000; // m
         $dLat = deg2rad($lat2 - $lat1);
         $dLng = deg2rad($lng2 - $lng1);
         $a = sin($dLat/2)**2 + cos(deg2rad($lat1))*cos(deg2rad($lat2))*sin($dLng/2)**2;
-        $c = 2 * atan2(sqrt($a), sqrt(1-$a));
-        return (int) round($earth * $c);
+        return (int) round(2 * $R * atan2(sqrt($a), sqrt(1-$a)));
     }
 
+    // =========================
+    // UTILIDADES FECHAS
+    // =========================
+    public function minutosSesion(VmSesion $sesion): int
+    {
+        if ($sesion->hora_inicio && $sesion->hora_fin) {
+            $ini = Carbon::createFromFormat('H:i:s', $sesion->hora_inicio);
+            $fin = Carbon::createFromFormat('H:i:s', $sesion->hora_fin);
+            return max(0, $ini->diffInMinutes($fin, false));
+        }
+        return 0;
+    }
+
+    /** Devuelve [inicio-1h, fin+1h] (si hay horas); si no, todo el día. */
+    public function timeWindowForSesion(VmSesion $sesion): array
+    {
+        $fecha = $sesion->fecha ? Carbon::parse($sesion->fecha)->toDateString() : now()->toDateString();
+
+        $norm = static function (?string $t): ?string {
+            if (!$t) return null;
+            if (preg_match('/^\d{2}:\d{2}$/', $t)) return $t.':00';
+            if (preg_match('/^\d{2}:\d{2}:\d{2}$/', $t)) return $t;
+            try { return Carbon::parse($t)->format('H:i:s'); } catch (\Throwable) { return null; }
+        };
+
+        $hi = $norm($sesion->hora_inicio);
+        $hf = $norm($sesion->hora_fin);
+
+        if ($hi && $hf) {
+            return [Carbon::parse("$fecha $hi")->subHour(), Carbon::parse("$fecha $hf")->addHour()];
+        }
+        if ($hi) {
+            $b = Carbon::parse("$fecha $hi");
+            return [$b->copy()->subHour(), $b->copy()->addHours(2)];
+        }
+        if ($hf) {
+            $b = Carbon::parse("$fecha $hf");
+            return [$b->copy()->subHours(2), $b->copy()->addHour()];
+        }
+        return [Carbon::parse("$fecha 00:00:00"), Carbon::parse("$fecha 23:59:59")];
+    }
+
+    // =========================
+    // RESOLUCIONES ESTRUCTURALES ROBUSTAS
+    // =========================
+    /** [ptype, pid, ep_sede_id, periodo_id] detectados a partir de la sesión. */
+    protected function datosDesdeSesion(VmSesion $sesion): array
+    {
+        // 1) Intento normal vía morphTo
+        $owner = $sesion->sessionable; // VmProceso | VmEvento | null
+
+        if ($owner instanceof VmProceso) {
+            $owner->loadMissing('proyecto');
+            $p = $owner->proyecto;
+            if ($p) return [VmProyecto::class, (int)$p->id, (int)$p->ep_sede_id, (int)$p->periodo_id];
+        }
+
+        if ($owner instanceof VmEvento) {
+            return [VmEvento::class, (int)$owner->id, (int)$owner->ep_sede_id, (int)$owner->periodo_id];
+        }
+
+        // 2) Fallback robusto si el morph no resolvió (aliases viejos en DB)
+        $type = strtolower((string) $sesion->sessionable_type);
+        $sid  = (int) $sesion->sessionable_id;
+
+        if (str_contains($type, 'proceso')) {
+            $row = DB::table('vm_procesos as pr')
+                ->join('vm_proyectos as p', 'p.id', '=', 'pr.proyecto_id')
+                ->select('p.id as pid','p.ep_sede_id','p.periodo_id')
+                ->where('pr.id', $sid)->first();
+            if ($row) return [VmProyecto::class, (int)$row->pid, (int)$row->ep_sede_id, (int)$row->periodo_id];
+        }
+
+        if (str_contains($type, 'evento')) {
+            $row = DB::table('vm_eventos')->select('id','ep_sede_id','periodo_id')->where('id', $sid)->first();
+            if ($row) return [VmEvento::class, (int)$row->id, (int)$row->ep_sede_id, (int)$row->periodo_id];
+        }
+
+        return [null, null, null, null];
+    }
+
+    /** Sólo el ep_sede_id (o null si no se puede resolver). */
+    public function epSedeIdDesdeSesion(VmSesion $sesion): ?int
+    {
+        [, , $ep] = $this->datosDesdeSesion($sesion);
+        return $ep;
+    }
+
+    /** sessionable → participable (Proyecto para sesiones de Proceso; Evento para sesiones de Evento). */
+    public function participableDesdeSesion(VmSesion $sesion): array
+    {
+        [$ptype, $pid] = $this->datosDesdeSesion($sesion);
+        if ($ptype === VmProyecto::class) return [VmProyecto::class, (int)$pid];
+        if ($ptype === VmEvento::class)   return [VmEvento::class,   (int)$pid];
+        return [null, null];
+    }
+
+    // =========================
+    // EXPEDIENTES
+    // =========================
     public function resolverExpedientePorUser(User $user, ?int $epSedeId): ?ExpedienteAcademico
     {
         if (!$epSedeId) return null;
@@ -94,14 +227,52 @@ class AsistenciaService
             ->first();
     }
 
-    public function minutosSesion(VmSesion $sesion): int
-    {
-        if ($sesion->hora_inicio && $sesion->hora_fin) {
-            $inicio = Carbon::createFromFormat('H:i:s', $sesion->hora_inicio);
-            $fin    = Carbon::createFromFormat('H:i:s', $sesion->hora_fin);
-            return max(0, $fin->diffInMinutes($inicio));
-        }
-        return (int) ($sesion->duracion_minutos ?? 0);
+    // =========================
+    // ASISTENCIAS
+    // =========================
+    public function upsertAsistencia(
+        VmSesion $sesion,
+        ExpedienteAcademico $exp,
+        string $metodo,
+        ?VmQrToken $token = null,
+        ?array $meta = null
+    ): VmAsistencia {
+        return DB::transaction(function () use ($sesion, $exp, $metodo, $token, $meta) {
+            /** @var VmAsistencia $a */
+            $a = VmAsistencia::firstOrNew([
+                'sesion_id'     => $sesion->id,
+                'expediente_id' => $exp->id,
+            ]);
+
+            if (!$a->exists || !$a->check_in_at) {
+                $a->check_in_at = now();
+            }
+
+            // Participación a nivel Proyecto/Evento
+            [$ptype, $pid] = $this->participableDesdeSesion($sesion);
+            if ($ptype && $pid) {
+                $a->participacion_id = VmParticipacion::where([
+                    'participable_type' => $ptype,
+                    'participable_id'   => $pid,
+                    'expediente_id'     => $exp->id,
+                ])->value('id');
+            }
+
+            $a->metodo            = $metodo; // 'QR' | 'MANUAL' | ...
+            $a->qr_token_id       = $token?->id;
+            $a->estado            = $a->estado ?: 'PENDIENTE';
+            $a->minutos_validados = $a->minutos_validados ?? 0;
+
+            $prev = is_array($a->meta) ? $a->meta : [];
+            $a->meta = array_merge($prev, $meta ?? []);
+            $a->save();
+
+            if ($token) {
+                $token->increment('usos');
+            }
+
+            return $a->refresh();
+        });
     }
 
     public function validarAsistencia(VmAsistencia $a, int $minutos, bool $crearRegistroHoras = true): VmAsistencia
@@ -114,23 +285,15 @@ class AsistenciaService
         if ($crearRegistroHoras && $minutos > 0) {
             $this->crearOActualizarRegistroHora($a, $minutos);
         }
-
         return $a;
     }
-
-    // ======= Helpers para crear registro_horas =======
 
     protected function crearOActualizarRegistroHora(VmAsistencia $a, int $minutos): void
     {
         $sesion = $a->sesion;
         [$ptype, $pid, $epSedeId, $periodoId] = $this->datosDesdeSesion($sesion);
+        if (!$ptype || !$pid || !$epSedeId || !$periodoId) return;
 
-        if (!$ptype || !$pid || !$epSedeId || !$periodoId) {
-            // Si faltan datos estructurales, no generamos el registro (o lanza excepción si prefieres)
-            return;
-        }
-
-        // Idempotencia: UNIQUE(asistencia_id)
         $reg = RegistroHora::firstOrNew(['asistencia_id' => $a->id]);
 
         $reg->fill([
@@ -146,104 +309,10 @@ class AsistenciaService
             'sesion_id'      => $sesion->id,
         ]);
 
-        // Si ya existía y cambió la duración, actualiza minutos/estado
         if ($reg->exists) {
             $reg->minutos = $minutos;
             $reg->estado  = 'APROBADO';
         }
-
         $reg->save();
-    }
-
-    /** @return array{0:?string,1:?int,2:?int,3:?int} [ptype, pid, ep_sede_id, periodo_id] */
-    protected function datosDesdeSesion(VmSesion $sesion): array
-    {
-        // VmProceso -> VmProyecto
-        if ($sesion->sessionable_type === VmProceso::class) {
-            $proc = $sesion->sessionable;
-            if ($proc) {
-                // Si tienes relación $proc->proyecto:
-                if (method_exists($proc, 'proyecto') && $proc->proyecto) {
-                    $p = $proc->proyecto;
-                    return [VmProyecto::class, (int)$p->id, (int)$p->ep_sede_id, (int)$p->periodo_id];
-                }
-                // Fallback por FK
-                if (isset($proc->proyecto_id)) {
-                    $p = VmProyecto::select('id','ep_sede_id','periodo_id')->find($proc->proyecto_id);
-                    if ($p) return [VmProyecto::class, (int)$p->id, (int)$p->ep_sede_id, (int)$p->periodo_id];
-                }
-            }
-        }
-
-        // VmEvento directo
-        if ($sesion->sessionable_type === VmEvento::class) {
-            $evt = $sesion->sessionable;
-            if ($evt && isset($evt->id, $evt->ep_sede_id, $evt->periodo_id)) {
-                return [VmEvento::class, (int)$evt->id, (int)$evt->ep_sede_id, (int)$evt->periodo_id];
-            }
-        }
-
-        return [null, null, null, null];
-    }
-
-    public function epSedeIdDesdeSesion(VmSesion $sesion): ?int
-    {
-        [$ptype, $pid, $ep, $per] = $this->datosDesdeSesion($sesion);
-        return $ep;
-    }
-
-    /** @return array{0:?string,1:?int} [participable_type, participable_id] */
-    private function participableDesdeSesion(VmSesion $sesion): array
-    {
-        if ($sesion->sessionable_type === VmProceso::class) {
-            $proc = $sesion->sessionable;
-            $pid = $proc->proyecto_id ?? null;
-            return $pid ? [VmProyecto::class, (int)$pid] : [null, null];
-        }
-        if ($sesion->sessionable_type === VmEvento::class) {
-            return [VmEvento::class, (int)$sesion->sessionable_id];
-        }
-        return [null, null];
-    }
-
-    public function upsertAsistencia(VmSesion $sesion, ExpedienteAcademico $exp, string $metodo, ?VmQrToken $token = null, ?array $meta = null): VmAsistencia
-    {
-        return DB::transaction(function () use ($sesion, $exp, $metodo, $token, $meta) {
-            /** @var VmAsistencia $a */
-            $a = VmAsistencia::firstOrNew([
-                'sesion_id'     => $sesion->id,
-                'expediente_id' => $exp->id,
-            ]);
-
-            if (!$a->exists || !$a->check_in_at) {
-                $a->check_in_at = now();
-            }
-
-            // Intentar asociar participación (si existe)
-            [$ptype, $pid] = $this->participableDesdeSesion($sesion);
-            if ($ptype && $pid) {
-                $a->participacion_id = VmParticipacion::where([
-                    'participable_type' => $ptype,
-                    'participable_id'   => $pid,
-                    'expediente_id'     => $exp->id,
-                ])->value('id');
-            }
-
-            $a->metodo            = $metodo; // 'QR' o 'MANUAL'
-            $a->qr_token_id       = $token?->id;
-            $a->estado            = $a->estado ?: 'PENDIENTE';
-            $a->minutos_validados = $a->minutos_validados ?? 0;
-
-            // merge meta
-            $prev = is_array($a->meta) ? $a->meta : [];
-            $a->meta = array_merge($prev, $meta ?? []);
-            $a->save();
-
-            if ($token) {
-                $token->increment('usos');
-            }
-
-            return $a->refresh();
-        });
     }
 }

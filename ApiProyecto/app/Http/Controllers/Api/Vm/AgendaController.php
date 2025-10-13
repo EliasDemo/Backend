@@ -304,4 +304,6 @@ class AgendaController extends Controller
 
         return response()->json(['ok' => true, 'data' => $cards]);
     }
+
+
 }

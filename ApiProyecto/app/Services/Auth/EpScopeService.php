@@ -3,6 +3,8 @@
 namespace App\Services\Auth;
 
 use App\Models\ExpedienteAcademico;
+use Illuminate\Support\Facades\Schema;
+
 
 class EpScopeService
 {
@@ -47,5 +49,36 @@ class EpScopeService
             ->unique()
             ->values()
             ->all();
+    }
+
+    public static function expedienteId(int $userId): ?int
+    {
+        $q = ExpedienteAcademico::query()
+            ->select('id')
+            ->where('estado', 'ACTIVO');
+
+        if (Schema::hasColumn('expedientes_academicos', 'user_id')) {
+            $q->where('user_id', $userId);
+        } else {
+            $q->where('usuario_id', $userId);
+        }
+
+        return optional($q->latest('id')->first())->id;
+    }
+
+    public static function userBelongsToEpSede(int $userId, int $epSedeId): bool
+    {
+        $q = ExpedienteAcademico::query()
+            ->where('ep_sede_id', $epSedeId)
+            ->where('estado', 'ACTIVO');
+
+        // tolera user_id vs usuario_id
+        if (Schema::hasColumn('expedientes_academicos', 'user_id')) {
+            $q->where('user_id', $userId);
+        } else {
+            $q->where('usuario_id', $userId);
+        }
+
+        return $q->exists();
     }
 }

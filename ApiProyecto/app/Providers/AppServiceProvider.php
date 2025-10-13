@@ -48,6 +48,8 @@ final class AppServiceProvider extends ServiceProvider
             // Aliases antiguos en PascalCase
             'VmProceso'               => VmProceso::class,
             'VmEvento'                => VmEvento::class,
+
+
         ];
 
         // Importante: los canónicos primero ⇒ Eloquent usará esos al guardar.
