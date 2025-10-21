@@ -7,22 +7,26 @@ use App\Http\Resources\Universidad\UniversidadResource;
 use App\Models\Universidad;
 use App\Models\Imagen;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
 class UniversidadController extends Controller
 {
     /**
+     * Si deseas que al subir un nuevo LOGO/PORTADA las anteriores
+     * pasen a "RESTRINGIDA", pon esto en true.
+     */
+    private const ARCHIVE_PREVIOUS = false;
+
+    /**
      * GET /api/universidad
-     * Retorna la única universidad con logo y portada.
+     * Retorna la única universidad con logo/portada "principales" y colecciones completas.
      */
     public function show()
     {
-        $uni = $this->getSingleton()
-            ->load(['logo', 'portada']); // relaciones morphOne con filtro por 'titulo'
+        $uni = $this->getSingleton()->load(['logo', 'portada', 'logos', 'portadas']);
 
         return response()->json([
-            'ok' => true,
+            'ok'   => true,
             'data' => new UniversidadResource($uni),
         ]);
     }
@@ -36,23 +40,23 @@ class UniversidadController extends Controller
         $uni = $this->getSingleton();
 
         $data = $request->validate([
-            'codigo'               => ['required','string','max:255', Rule::unique('universidades','codigo')->ignore($uni->id)],
-            'nombre'               => ['required','string','max:255'],
-            'tipo_gestion'         => ['required', Rule::in(\App\Models\Universidad::TIPO_GESTION)],
-            'estado_licenciamiento'=> ['required', Rule::in(\App\Models\Universidad::ESTADO_LICENCIAMIENTO)],
+            'codigo'                => ['required','string','max:255', Rule::unique('universidades','codigo')->ignore($uni->id)],
+            'nombre'                => ['required','string','max:255'],
+            'tipo_gestion'          => ['required', Rule::in(\App\Models\Universidad::TIPO_GESTION)],
+            'estado_licenciamiento' => ['required', Rule::in(\App\Models\Universidad::ESTADO_LICENCIAMIENTO)],
         ]);
 
         $uni->update($data);
 
         return response()->json([
             'ok'   => true,
-            'data' => new UniversidadResource($uni->fresh(['logo','portada'])),
+            'data' => new UniversidadResource($uni->fresh(['logo','portada','logos','portadas'])),
         ]);
     }
 
     /**
      * POST /api/universidad/logo
-     * Sube/reemplaza el LOGO. Mantiene el anterior, pero lo vuelve "RESTRINGIDA".
+     * Sube/reemplaza un LOGO (permite múltiples si ARCHIVE_PREVIOUS=false).
      * Body: file (multipart/form-data)
      */
     public function setLogo(Request $request)
@@ -66,7 +70,7 @@ class UniversidadController extends Controller
 
     /**
      * POST /api/universidad/portada
-     * Sube/reemplaza la PORTADA. Mantiene el anterior como RESTRINGIDA.
+     * Sube/reemplaza una PORTADA (permite múltiples si ARCHIVE_PREVIOUS=false).
      * Body: file (multipart/form-data)
      */
     public function setPortada(Request $request)
@@ -86,9 +90,9 @@ class UniversidadController extends Controller
     {
         // Si no existe, crea un registro base.
         return Universidad::query()->firstOrCreate([], [
-            'codigo' => 'UNI-001',
-            'nombre' => 'Universidad',
-            'tipo_gestion' => 'PUBLICO',
+            'codigo'                => 'UNI-001',
+            'nombre'                => 'Universidad',
+            'tipo_gestion'          => 'PUBLICO',
             'estado_licenciamiento' => 'NINGUNO',
         ]);
     }
@@ -96,7 +100,7 @@ class UniversidadController extends Controller
     private function storeImagenCategoria(Request $request, string $categoria)
     {
         $uni  = $this->getSingleton();
-        $user = $request->user(); // para subido_por
+        $user = $request->user();
 
         $file = $request->file('file');
         $disk = config('filesystems.default', 'public');
@@ -108,24 +112,26 @@ class UniversidadController extends Controller
             $disk
         );
 
-        // “Archivar” imágenes previas de esa categoría (no se borran)
-        $uni->imagenes()
-            ->where('titulo', $categoria)
-            ->update(['visibilidad' => 'RESTRINGIDA']);
+        // Opcional: archivar anteriores de la MISMA categoría
+        if (self::ARCHIVE_PREVIOUS) {
+            $uni->imagenes()
+                ->where('titulo', $categoria)
+                ->update(['visibilidad' => 'RESTRINGIDA']);
+        }
 
         // Crear nueva imagen
         /** @var Imagen $img */
         $img = $uni->imagenes()->create([
             'disk'        => $disk,
             'path'        => $path,
-            'url'         => null, // si usas S3 público puedes setear la URL completa aquí
-            'titulo'      => $categoria, // ← usamos 'LOGO' / 'PORTADA'
+            'url'         => null,         // si usas S3 público puedes setear la URL aquí
+            'titulo'      => $categoria,   // 'LOGO' o 'PORTADA'
             'visibilidad' => 'PUBLICA',
             'subido_por'  => $user?->id,
         ]);
 
-        // Respuesta
-        $uni->load(['logo','portada']);
+        // Respuesta (incluye principal y colecciones)
+        $uni->load(['logo','portada','logos','portadas']);
 
         return response()->json([
             'ok'   => true,

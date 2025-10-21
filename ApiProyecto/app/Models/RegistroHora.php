@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class RegistroHora extends Model
 {
@@ -31,12 +32,40 @@ class RegistroHora extends Model
     ];
 
     // Relaciones
-    public function expediente()  { return $this->belongsTo(ExpedienteAcademico::class, 'expediente_id'); }
-    public function sesion()      { return $this->belongsTo(VmSesion::class, 'sesion_id'); }
-    public function asistencia()  { return $this->belongsTo(VmAsistencia::class, 'asistencia_id'); }
-    public function vinculable()  { return $this->morphTo(); }
+    public function expediente(): BelongsTo
+    {
+        return $this->belongsTo(ExpedienteAcademico::class, 'expediente_id');
+    }
+
+    public function sesion(): BelongsTo
+    {
+        return $this->belongsTo(VmSesion::class, 'sesion_id');
+    }
+
+    public function asistencia(): BelongsTo
+    {
+        return $this->belongsTo(VmAsistencia::class, 'asistencia_id');
+    }
+
+    public function vinculable()
+    {
+        return $this->morphTo();
+    }
+
+    // 👇 Esta es la relación que te faltaba y que resuelve el with('periodo')
+    public function periodo(): BelongsTo
+    {
+        return $this->belongsTo(PeriodoAcademico::class, 'periodo_id', 'id');
+    }
 
     // Scopes útiles
-    public function scopeDeExpediente($q, int $expedienteId) { return $q->where('expediente_id', $expedienteId); }
-    public function scopeDePeriodo($q, int $periodoId) { return $q->where('periodo_id', $periodoId); }
+    public function scopeDeExpediente($q, int $expedienteId)
+    {
+        return $q->where('expediente_id', $expedienteId);
+    }
+
+    public function scopeDePeriodo($q, int $periodoId)
+    {
+        return $q->where('periodo_id', $periodoId);
+    }
 }

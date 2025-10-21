@@ -18,11 +18,15 @@ class EditarProyectoController extends Controller
     public function show(VmProyecto $proyecto): JsonResponse
     {
         $user = request()->user();
+        if (!$user) {
+            return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
+        }
+
+        // 🔐 exige permiso ep.manage.ep_sede + pertenencia activa a esa EP_SEDE
         if (!EpScopeService::userManagesEpSede($user->id, (int)$proyecto->ep_sede_id)) {
             return response()->json(['ok'=>false,'message'=>'No autorizado para esta EP_SEDE.'], 403);
         }
 
-        // Cargamos procesos con sesiones (si necesitas imágenes agrega ->load('imagenes'))
         $proyecto->load(['procesos.sesiones']);
 
         return response()->json([
@@ -34,13 +38,17 @@ class EditarProyectoController extends Controller
         ], 200);
     }
 
-    /** PUT /api/vm/proyectos/{proyecto}
-     *  Edita SOLO campos del proyecto.
-     *  Permitido si: estado PLANIFICADO y no hay sesiones iniciadas.
+    /**
+     * PUT /api/vm/proyectos/{proyecto}
+     * Edita SOLO campos del proyecto si está PLANIFICADO y sin sesiones iniciadas.
      */
     public function update(Request $request, VmProyecto $proyecto): JsonResponse
     {
         $user = $request->user();
+        if (!$user) {
+            return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
+        }
+        // 🔐
         if (!EpScopeService::userManagesEpSede($user->id, (int)$proyecto->ep_sede_id)) {
             return response()->json(['ok'=>false,'message'=>'No autorizado para esta EP_SEDE.'], 403);
         }
@@ -52,7 +60,6 @@ class EditarProyectoController extends Controller
             ], 409);
         }
 
-        // Validación ligera para update (no cambiamos ep_sede_id ni periodo_id aquí)
         $data = $request->validate([
             'titulo'                     => ['sometimes','string','max:255'],
             'descripcion'                => ['sometimes','nullable','string'],
@@ -60,12 +67,8 @@ class EditarProyectoController extends Controller
             'modalidad'                  => ['sometimes','in:PRESENCIAL,VIRTUAL,MIXTA'],
             'horas_planificadas'         => ['sometimes','integer','min:1','max:32767'],
             'horas_minimas_participante' => ['sometimes','nullable','integer','min:0','max:32767'],
-
-            // 👇 Permitir cambiar nivel mientras siga planificado y se respete la unicidad
             'nivel'                      => [
-                'sometimes',
-                'integer',
-                'between:1,10',
+                'sometimes','integer','between:1,10',
                 Rule::unique('vm_proyectos', 'nivel')
                     ->where(fn ($q) => $q
                         ->where('ep_sede_id', $proyecto->ep_sede_id)
@@ -84,6 +87,10 @@ class EditarProyectoController extends Controller
     public function destroy(VmProyecto $proyecto): JsonResponse
     {
         $user = request()->user();
+        if (!$user) {
+            return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
+        }
+        // 🔐
         if (!EpScopeService::userManagesEpSede($user->id, (int)$proyecto->ep_sede_id)) {
             return response()->json(['ok'=>false,'message'=>'No autorizado para esta EP_SEDE.'], 403);
         }
@@ -96,7 +103,6 @@ class EditarProyectoController extends Controller
         }
 
         $proyecto->delete();
-        // 204 = No Content (conviene no enviar body)
         return response()->json(null, 204);
     }
 
@@ -106,9 +112,7 @@ class EditarProyectoController extends Controller
      */
     private function editable(VmProyecto $proyecto): bool
     {
-        if ($proyecto->estado !== 'PLANIFICADO') {
-            return false;
-        }
+        if ($proyecto->estado !== 'PLANIFICADO') return false;
 
         $today = Carbon::today()->toDateString();
         $now   = Carbon::now()->format('H:i:s');

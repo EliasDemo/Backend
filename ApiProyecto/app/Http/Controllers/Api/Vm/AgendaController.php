@@ -14,6 +14,10 @@ class AgendaController extends Controller
     public function agendaAlumno(Request $request): JsonResponse
     {
         $user = $request->user();
+        if (!$user) {
+            return response()->json(['ok' => false, 'message' => 'No autenticado.'], 401);
+        }
+
         $periodoId = $request->integer('periodo_id');
 
         // 1) Detectar expediente activo del alumno
@@ -45,17 +49,13 @@ class AgendaController extends Controller
         }
 
         // 4) Proyectos del periodo (si hay periodo)
-        $proyectosQ = DB::table('vm_proyectos')
-            ->whereIn('id', $participaciones);
-
+        $proyectosQ = DB::table('vm_proyectos')->whereIn('id', $participaciones);
         if ($periodoId) {
             $proyectosQ->where('periodo_id', $periodoId);
         }
-
         $proyectos = $proyectosQ->get();
 
         $ahora = Carbon::now();
-
         $respuesta = [];
 
         foreach ($proyectos as $proy) {
@@ -87,11 +87,10 @@ class AgendaController extends Controller
                     $durMin = max(0, $inicio->diffInMinutes($fin, false));
                     $minTotal += $durMin;
 
-                    // Determinar estado relativo
-                    $estadoRel = 'PROXIMA';
-                    if ($ahora->lt($inicio)) {
+                    // Estado relativo
+                    if (Carbon::now()->lt($inicio)) {
                         $estadoRel = 'PROXIMA';
-                    } elseif ($ahora->between($inicio, $fin)) {
+                    } elseif (Carbon::now()->between($inicio, $fin)) {
                         $estadoRel = 'ACTUAL';
                     } else {
                         $estadoRel = 'PASADA';
@@ -103,8 +102,6 @@ class AgendaController extends Controller
                         ->where('expediente_id', $exp->id)
                         ->first();
 
-                    $asisOut = null;
-
                     if ($asis) {
                         $minVal += (int) $asis->minutos_validados;
                         if ($asis->estado === 'VALIDADO') $asistidas++;
@@ -115,11 +112,7 @@ class AgendaController extends Controller
                         ];
                     } else {
                         if ($estadoRel === 'PASADA') $faltadas++;
-                        $asisOut = [
-                            'estado' => 'SIN_REGISTRO',
-                            'metodo' => null,
-                            'check_in_at' => null,
-                        ];
+                        $asisOut = ['estado' => 'SIN_REGISTRO', 'metodo' => null, 'check_in_at' => null];
                     }
 
                     $sesionesResp[] = [
@@ -190,14 +183,22 @@ class AgendaController extends Controller
     public function agendaStaff(Request $request): JsonResponse
     {
         $user = $request->user();
+        if (!$user) {
+            return response()->json(['ok' => false, 'message' => 'No autenticado.'], 401);
+        }
+        // 🔐 Solo si necesita permiso → aquí SÍ: agenda de STAFF (gestión por EP-Sede)
+        if (!$user->can('ep.manage.ep_sede')) {
+            return response()->json(['ok' => false, 'message' => 'NO_AUTORIZADO'], 403);
+        }
+
         $nivel = $request->integer('nivel') ?: null;
         $periodoId = $request->integer('periodo_id');
 
-        // EP_SEDE donde el usuario es COORDINADOR o ENCARGADO ACTIVO
+        // EP_SEDE donde el usuario tiene expediente activo como STAFF (dato de negocio, no auth)
         $epSedes = DB::table('expedientes_academicos')
             ->where('user_id', $user->id)
             ->where('estado', 'ACTIVO')
-            ->whereIn('rol', ['COORDINADOR','ENCARGADO'])
+            ->whereIn('rol', ['COORDINADOR','ENCARGADO']) // clasificador de staff (no para autorización)
             ->pluck('ep_sede_id')
             ->all();
 
@@ -236,7 +237,7 @@ class AgendaController extends Controller
         $cards = [];
 
         foreach ($sesiones as $row) {
-            // inscritos = participaciones del proyecto (alumnos)
+            // inscritos (alumnos)
             $inscritos = (int) DB::table('vm_participaciones')
                 ->where('participable_type', \App\Models\VmProyecto::class)
                 ->where('participable_id', $row->proyecto_id)
@@ -249,20 +250,13 @@ class AgendaController extends Controller
                 ->count();
 
             // QR activo (si lo hay)
+            $now = Carbon::now();
             $vqr = DB::table('vm_qr_tokens')
                 ->where('sesion_id', $row->id)
                 ->where('activo', 1)
-                ->where(function($q){
-                    $q->whereNull('max_usos')->orWhereColumn('usos', '<', 'max_usos');
-                })
-                ->where(function($q){
-                    $now = Carbon::now();
-                    $q->whereNull('usable_from')->orWhere('usable_from','<=',$now);
-                })
-                ->where(function($q){
-                    $now = Carbon::now();
-                    $q->whereNull('expires_at')->orWhere('expires_at','>=',$now);
-                })
+                ->where(function($q){ $q->whereNull('max_usos')->orWhereColumn('usos', '<', 'max_usos'); })
+                ->where(function($q) use ($now){ $q->whereNull('usable_from')->orWhere('usable_from','<=',$now); })
+                ->where(function($q) use ($now){ $q->whereNull('expires_at')->orWhere('expires_at','>=',$now); })
                 ->orderByDesc('id')
                 ->first();
 
@@ -297,13 +291,11 @@ class AgendaController extends Controller
                         'expires_at'  => optional($vqr->expires_at)->format('Y-m-d H:i:s'),
                         'geo' => null,
                     ] : null,
-                    'manual' => null, // aún no implementado
+                    'manual' => null,
                 ],
             ];
         }
 
         return response()->json(['ok' => true, 'data' => $cards]);
     }
-
-
 }

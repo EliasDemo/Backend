@@ -4,7 +4,8 @@ namespace App\Http\Resources\User;
 
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Filesystem\FilesystemAdapter; // <-- para ayudar a Intelephense
+use Illuminate\Filesystem\FilesystemAdapter;
+use App\Http\Resources\User\ExpedienteDetailResource; // ✅ import necesario
 
 class UserDetailResource extends JsonResource
 {
@@ -14,7 +15,7 @@ class UserDetailResource extends JsonResource
         $roles = $this->getRoleNames()->values();
         $perms = $this->getAllPermissions()->pluck('name')->values();
 
-        // URL pública de foto (corrige P1013 de Intelephense)
+        // URL pública de la foto
         $photo = $this->profile_photo;
         $photoUrl = $photo && !str_starts_with($photo, 'http')
             ? (function () use ($photo) {
@@ -24,7 +25,6 @@ class UserDetailResource extends JsonResource
                 if (method_exists($disk, 'url')) {
                     return $disk->url($photo);
                 }
-                // Fallback si el disk no implementa url()
                 return Storage::url($photo);
             })()
             : $photo;
@@ -43,7 +43,7 @@ class UserDetailResource extends JsonResource
             'username'         => $this->username,
             'first_name'       => $this->first_name,
             'last_name'        => $this->last_name,
-            'full_name'        => trim($this->first_name.' '.$this->last_name),
+            'full_name'        => trim(($this->first_name ?? '').' '.($this->last_name ?? '')),
             'email'            => $this->email,
             'status'           => $this->status,
             'doc_tipo'         => $this->doc_tipo,
@@ -59,6 +59,8 @@ class UserDetailResource extends JsonResource
             'roles'         => $roles,
             'rol_principal' => $roles->first(),
             'permissions'   => $perms,
+            // ✅ Mapa booleano para checks rápidos en FE: permissions_map['vm.proyecto.create'] === true
+            'permissions_map' => $perms->mapWithKeys(fn ($p) => [$p => true]),
 
             'expediente_activo' => $expedienteActivo
                 ? new ExpedienteDetailResource($expedienteActivo)

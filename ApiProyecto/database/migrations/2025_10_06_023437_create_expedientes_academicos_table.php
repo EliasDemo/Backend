@@ -26,6 +26,8 @@ return new class extends Migration
             // ===== Datos de alumno (para staff pueden ser NULL) =====
             $table->string('codigo_estudiante')->nullable();
             $table->string('grupo')->nullable();
+            $table->string('ciclo')->nullable();
+
             $table->string('correo_institucional')->nullable();
 
             // ===== Estado y Rol con alcance EP_SEDE =====

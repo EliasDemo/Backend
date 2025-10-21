@@ -12,13 +12,16 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
-use Symfony\Component\HttpFoundation\Response as SymfonyResponse; // 👈 tipo común
+use Symfony\Component\HttpFoundation\Response as SymfonyResponse;
 
+/**
+ * ProyectoImagenController
+ * Endpoints para administrar imágenes de proyectos.
+ * 🔐 Permiso: el usuario debe gestionar la EP_SEDE del proyecto.
+ */
 class ProyectoImagenController extends Controller
 {
-    /**
-     * GET /api/vm/proyectos/{proyecto}/imagenes
-     */
+    /** GET /api/vm/proyectos/{proyecto}/imagenes */
     public function index(VmProyecto $proyecto): JsonResponse
     {
         $user = request()->user();
@@ -68,7 +71,7 @@ class ProyectoImagenController extends Controller
         $img = $proyecto->imagenes()->create([
             'disk'        => $disk,
             'path'        => $path,
-            'url'         => $absoluteUrl, // guardamos la URL absoluta
+            'url'         => $absoluteUrl,
             'titulo'      => null,
             'visibilidad' => 'PUBLICA',
             'subido_por'  => $user->id,
@@ -80,9 +83,7 @@ class ProyectoImagenController extends Controller
         ], 201);
     }
 
-    /**
-     * DELETE /api/vm/proyectos/{proyecto}/imagenes/{imagen}
-     */
+    /** DELETE /api/vm/proyectos/{proyecto}/imagenes/{imagen} */
     public function destroy(VmProyecto $proyecto, Imagen $imagen): SymfonyResponse
     {
         $user = request()->user();
@@ -101,10 +102,6 @@ class ProyectoImagenController extends Controller
 
         $imagen->delete();
 
-        // 204 No Content
-        return response()->noContent();
-
-        // Alternativa si prefieres tipar como JsonResponse:
-        // return response()->json(null, 204);
+        return response()->noContent(); // 204
     }
 }

@@ -5,7 +5,7 @@ return [
     'allowed_methods' => ['*'],
     'allowed_origins' => [
         'http://localhost:4200',
-        'http://192.168.0.198:4200',
+        'http://172.31.208.1:4200',
     ],
     'allowed_origins_patterns' => [],
     'allowed_headers' => ['*'],

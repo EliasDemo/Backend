@@ -3,82 +3,122 @@
 namespace App\Services\Auth;
 
 use App\Models\ExpedienteAcademico;
+use App\Models\User;
 use Illuminate\Support\Facades\Schema;
-
 
 class EpScopeService
 {
+    // Permisos (Spatie)
+    public const PERM_MANAGE_EP_SEDE   = 'ep.manage.ep_sede';
+    public const PERM_MANAGE_SEDE      = 'ep.manage.sede';
+    public const PERM_MANAGE_FACULTAD  = 'ep.manage.facultad';
+    public const PERM_VIEW_EXPEDIENTE  = 'ep.view.expediente';
+
+    /** Determina el nombre de la columna de usuario: user_id o usuario_id */
+    protected static function userIdColumn(): string
+    {
+        return Schema::hasColumn('expedientes_academicos', 'user_id') ? 'user_id' : 'usuario_id';
+    }
+
+    /** Carga el usuario (necesario para ->can()) */
+    protected static function user(int $userId): ?User
+    {
+        return User::find($userId);
+    }
+
     public static function userManagesEpSede(int $userId, int $epSedeId): bool
     {
+        $user = self::user($userId);
+        if (!$user || !$user->can(self::PERM_MANAGE_EP_SEDE)) {
+            return false;
+        }
+
+        $col = self::userIdColumn();
         return ExpedienteAcademico::query()
-            ->where('user_id', $userId)
+            ->where($col, $user->id)
             ->where('ep_sede_id', $epSedeId)
             ->where('estado', 'ACTIVO')
-            ->whereIn('rol', ['COORDINADOR','ENCARGADO'])
             ->exists();
     }
 
     public static function userManagesSede(int $userId, int $sedeId): bool
     {
+        $user = self::user($userId);
+        if (!$user || !$user->can(self::PERM_MANAGE_SEDE)) {
+            return false;
+        }
+
+        $col = self::userIdColumn();
         return ExpedienteAcademico::query()
-            ->where('user_id', $userId)
+            ->where($col, $user->id)
             ->where('estado', 'ACTIVO')
-            ->whereIn('rol', ['COORDINADOR','ENCARGADO'])
             ->whereHas('epSede', fn($q) => $q->where('sede_id', $sedeId))
             ->exists();
     }
 
     public static function userManagesFacultad(int $userId, int $facultadId): bool
     {
+        $user = self::user($userId);
+        if (!$user || !$user->can(self::PERM_MANAGE_FACULTAD)) {
+            return false;
+        }
+
+        $col = self::userIdColumn();
         return ExpedienteAcademico::query()
-            ->where('user_id', $userId)
+            ->where($col, $user->id)
             ->where('estado', 'ACTIVO')
-            ->whereIn('rol', ['COORDINADOR','ENCARGADO'])
             ->whereHas('epSede.escuelaProfesional', fn($q) => $q->where('facultad_id', $facultadId))
             ->exists();
     }
 
-    /** 👇 NUEVO: devuelve los ep_sede_id que administra el usuario */
+    /** EP-Sedes que el usuario puede gestionar (según permiso + pertenencia activa) */
     public static function epSedesIdsManagedBy(int $userId): array
     {
+        $user = self::user($userId);
+        if (!$user || !$user->can(self::PERM_MANAGE_EP_SEDE)) {
+            return [];
+        }
+
+        $col = self::userIdColumn();
         return ExpedienteAcademico::query()
-            ->where('user_id', $userId)
+            ->where($col, $user->id)
             ->where('estado', 'ACTIVO')
-            ->whereIn('rol', ['COORDINADOR','ENCARGADO'])
             ->pluck('ep_sede_id')
             ->unique()
             ->values()
             ->all();
     }
 
+    /** Devuelve el ID del expediente activo del usuario (si tiene permiso de ver) */
     public static function expedienteId(int $userId): ?int
     {
+        $user = self::user($userId);
+        if (!$user || !$user->can(self::PERM_VIEW_EXPEDIENTE)) {
+            return null;
+        }
+
+        $col = self::userIdColumn();
         $q = ExpedienteAcademico::query()
             ->select('id')
-            ->where('estado', 'ACTIVO');
-
-        if (Schema::hasColumn('expedientes_academicos', 'user_id')) {
-            $q->where('user_id', $userId);
-        } else {
-            $q->where('usuario_id', $userId);
-        }
+            ->where('estado', 'ACTIVO')
+            ->where($col, $user->id);
 
         return optional($q->latest('id')->first())->id;
     }
 
+    /** Pertenencia simple (no exige permiso de gestión) */
     public static function userBelongsToEpSede(int $userId, int $epSedeId): bool
     {
-        $q = ExpedienteAcademico::query()
-            ->where('ep_sede_id', $epSedeId)
-            ->where('estado', 'ACTIVO');
-
-        // tolera user_id vs usuario_id
-        if (Schema::hasColumn('expedientes_academicos', 'user_id')) {
-            $q->where('user_id', $userId);
-        } else {
-            $q->where('usuario_id', $userId);
+        $user = self::user($userId);
+        if (!$user) {
+            return false;
         }
 
-        return $q->exists();
+        $col = self::userIdColumn();
+        return ExpedienteAcademico::query()
+            ->where('ep_sede_id', $epSedeId)
+            ->where('estado', 'ACTIVO')
+            ->where($col, $user->id)
+            ->exists();
     }
 }

@@ -13,7 +13,6 @@ use App\Services\Vm\AsistenciaService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class AsistenciasController extends Controller
@@ -21,12 +20,16 @@ class AsistenciasController extends Controller
     public function __construct(private AsistenciaService $svc) {}
 
     // ============================================================
-    // TOKENS
+    // TOKENS (STAFF)
     // ============================================================
 
     /** POST /api/vm/sesiones/{sesion}/qr  (staff) */
     public function generarQr(Request $request, VmSesion $sesion): JsonResponse
     {
+        $user = $request->user();
+        if (!$user) return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
+        if (!$user->can('ep.manage.ep_sede')) return response()->json(['ok'=>false,'message'=>'NO_AUTORIZADO'], 403);
+
         $data = $request->validate([
             'max_usos' => ['nullable','integer','min:1'],
             'lat'      => ['nullable','numeric','between:-90,90'],
@@ -39,11 +42,12 @@ class AsistenciasController extends Controller
             : null;
 
         $t = $this->svc->generarToken(
+            actor: $user,
             sesion: $sesion,
             tipo: 'QR',
             geo: $geo,
             maxUsos: $data['max_usos'] ?? null,
-            creadoPor: $request->user()->id ?? null
+            creadoPor: $user->id
         );
 
         return response()->json([
@@ -61,7 +65,15 @@ class AsistenciasController extends Controller
     /** POST /api/vm/sesiones/{sesion}/activar-manual  (staff) */
     public function activarManual(Request $request, VmSesion $sesion): JsonResponse
     {
-        $t = $this->svc->generarTokenManualAlineado($sesion, $request->user()->id ?? null);
+        $user = $request->user();
+        if (!$user) return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
+        if (!$user->can('ep.manage.ep_sede')) return response()->json(['ok'=>false,'message'=>'NO_AUTORIZADO'], 403);
+
+        $t = $this->svc->generarTokenManualAlineado(
+            actor: $user,
+            sesion: $sesion,
+            creadoPor: $user->id
+        );
 
         return response()->json([
             'ok'   => true,
@@ -75,18 +87,22 @@ class AsistenciasController extends Controller
     }
 
     // ============================================================
-    // CHECK-IN QR (alumno)
+    // CHECK-IN QR (ALUMNO)
     // ============================================================
+
     /** POST /api/vm/sesiones/{sesion}/check-in/qr */
     public function checkInPorQr(Request $request, VmSesion $sesion): JsonResponse
     {
+        $actor = $request->user();
+        if (!$actor) return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
+
         $data = $request->validate([
             'token' => ['required','string','size:32'],
             'lat'   => ['nullable','numeric','between:-90,90'],
             'lng'   => ['nullable','numeric','between:-180,180'],
         ]);
 
-        /** @var VmQrToken $token */
+        /** @var VmQrToken|null $token */
         $token = VmQrToken::where('sesion_id', $sesion->id)
             ->where('tipo', 'QR')
             ->where('token', $data['token'])
@@ -105,7 +121,8 @@ class AsistenciasController extends Controller
             return $this->fail('SESION_SIN_EP_SEDE', 'La sesión no está vinculada a una EP_SEDE.', 422);
         }
 
-        $exp = $this->svc->resolverExpedientePorUser($request->user(), $epSedeId);
+        // actor == user (no requiere permiso adicional)
+        $exp = $this->svc->resolverExpedientePorUser($actor, $actor, $epSedeId);
         if (!$exp) {
             return $this->fail('DIFFERENT_EP_SEDE', 'No perteneces a la EP_SEDE de la sesión.', 422, ['ep_sede_id'=>$epSedeId]);
         }
@@ -125,8 +142,9 @@ class AsistenciasController extends Controller
             return $this->fail('NO_INSCRITO', 'El estudiante no está inscrito/confirmado en esta actividad.', 422);
         }
 
-        // Delegamos al servicio (debe guardar estado PENDIENTE y metodo QR)
+        // upsert con actor explícito
         $a = $this->svc->upsertAsistencia(
+            actor: $actor,
             sesion: $sesion,
             exp: $exp,
             metodo: 'QR',
@@ -150,16 +168,20 @@ class AsistenciasController extends Controller
     }
 
     // ============================================================
-    // CHECK-IN MANUAL (staff) — requiere ventana MANUAL activa
+    // CHECK-IN MANUAL (STAFF) — requiere ventana MANUAL activa
     // ============================================================
-    /** POST /api/vm/sesiones/{sesion}/check-in/manual  (body: { "codigo": "ENF2025-0001" }) */
+
+    /** POST /api/vm/sesiones/{sesion}/check-in/manual  */
     public function checkInManual(Request $request, VmSesion $sesion): JsonResponse
     {
+        $user = $request->user();
+        if (!$user) return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
+        if (!$user->can('ep.manage.ep_sede')) return response()->json(['ok'=>false,'message'=>'NO_AUTORIZADO'], 403);
+
         $payload = $request->validate([
-            'codigo' => ['required','string','max:191'], // = codigo_estudiante
+            'codigo' => ['required','string','max:191'],
         ]);
 
-        // 1) Ventana MANUAL activa y vigente
         $manual = VmQrToken::where('sesion_id', $sesion->id)
             ->where('tipo', 'MANUAL')
             ->vigentesAhora()
@@ -169,13 +191,11 @@ class AsistenciasController extends Controller
             return $this->fail('VENTANA_NO_ACTIVA', 'Activa primero el llamado manual (o está fuera de ventana).', 422);
         }
 
-        // 2) EP_SEDE
         $epSedeId = $this->svc->epSedeIdDesdeSesion($sesion);
         if (!$epSedeId) {
             return $this->fail('SESION_SIN_EP_SEDE', 'La sesión no está vinculada a una EP_SEDE.', 422);
         }
 
-        // 3) Buscar expediente por código
         $exp = ExpedienteAcademico::query()
             ->where('ep_sede_id', $epSedeId)
             ->where('codigo_estudiante', $payload['codigo'])
@@ -187,7 +207,6 @@ class AsistenciasController extends Controller
             ]);
         }
 
-        // 4) Debe estar inscrito a nivel PROYECTO/EVENTO
         [$ptype, $pid] = $this->svc->participableDesdeSesion($sesion);
         if (!$ptype || !$pid) {
             return $this->fail('SESION_SIN_DUENO', 'No se pudo resolver el dueño de la sesión.', 422);
@@ -204,28 +223,25 @@ class AsistenciasController extends Controller
             return $this->fail('NO_INSCRITO', 'El estudiante no está inscrito/confirmado en esta actividad.', 422);
         }
 
-        // 5) Registrar asistencia (estado y metodo compatibles con ENUM)
         $asistencia = DB::transaction(function () use ($request, $sesion, $exp, $manual) {
             /** @var VmAsistencia $a */
             $a = VmAsistencia::updateOrCreate(
                 ['sesion_id' => $sesion->id, 'expediente_id' => $exp->id],
                 [
-                    'metodo'           => 'MANUAL',      // ✅ coincide con ENUM
-                    'estado'           => 'PENDIENTE',   // ✅ coincide con ENUM
+                    'metodo'           => 'MANUAL',
+                    'estado'           => 'PENDIENTE',
                     'check_in_at'      => now(),
                     'minutos_validados'=> 0,
-                    'qr_token_id'      => $manual->id,   // opcional: enlaza token MANUAL
+                    'qr_token_id'      => $manual->id,
                     'meta'             => [
                         'registrado_por' => $request->user()->id ?? null,
                         'ip'             => $request->ip(),
                         'ua'             => $request->userAgent(),
                         'token_id'       => $manual->id,
-                        // sin flags de justificación aquí
                     ],
                 ]
             );
 
-            // minutos = fin - inicio y sincroniza registro
             $this->crearOActualizarRegistroHorasLocal($a, $sesion, $exp);
 
             return $a->fresh();
@@ -234,9 +250,13 @@ class AsistenciasController extends Controller
         return response()->json(['ok'=>true,'code'=>'CHECKED_IN','data'=>['asistencia'=>$asistencia]], 201);
     }
 
-    /** POST /api/vm/sesiones/{sesion}/asistencias/justificar */
+    /** POST /api/vm/sesiones/{sesion}/asistencias/justificar (STAFF) */
     public function checkInFueraDeHora(Request $request, VmSesion $sesion): JsonResponse
     {
+        $user = $request->user();
+        if (!$user) return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
+        if (!$user->can('ep.manage.ep_sede')) return response()->json(['ok'=>false,'message'=>'NO_AUTORIZADO'], 403);
+
         $payload = $request->validate([
             'codigo'        => ['required','string','max:191'],
             'justificacion' => ['required','string','max:2000'],
@@ -278,8 +298,8 @@ class AsistenciasController extends Controller
             $a = VmAsistencia::updateOrCreate(
                 ['sesion_id' => $sesion->id, 'expediente_id' => $exp->id],
                 [
-                    'metodo'           => 'MANUAL',      // ✅ usamos MANUAL (ENUM)
-                    'estado'           => 'PENDIENTE',   // ✅ ENUM
+                    'metodo'           => 'MANUAL',
+                    'estado'           => 'PENDIENTE',
                     'check_in_at'      => now(),
                     'minutos_validados'=> 0,
                     'meta'             => [
@@ -303,11 +323,16 @@ class AsistenciasController extends Controller
     }
 
     // ============================================================
-    // PARTICIPANTES (front)
+    // PARTICIPANTES / CONSULTA (STAFF)
     // ============================================================
+
     /** GET /api/vm/sesiones/{sesion}/participantes */
     public function participantes(Request $request, VmSesion $sesion): JsonResponse
     {
+        $user = $request->user();
+        if (!$user) return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
+        if (!$user->can('ep.manage.ep_sede')) return response()->json(['ok'=>false,'message'=>'NO_AUTORIZADO'], 403);
+
         [$ptype, $pid] = $this->svc->participableDesdeSesion($sesion);
         $epSedeId = $this->svc->epSedeIdDesdeSesion($sesion);
 
@@ -337,14 +362,8 @@ class AsistenciasController extends Controller
             /** @var VmAsistencia|null $asis */
             $asis = $exp ? $asisPorExp->get($exp->id) : null;
 
-            $estadoCalculado = '';
-            if ($asis) {
-                $estadoCalculado = 'PRESENTE';
-            } else {
-                $estadoCalculado = ($now->lt($winStart) || $now->gt($winEnd)) ? 'FALTA' : '';
-            }
+            $estadoCalculado = $asis ? 'PRESENTE' : (($now->lt($winStart) || $now->gt($winEnd)) ? 'FALTA' : '');
 
-            // 👉 Mapea “MANUAL (justificada)” para el front si meta.fuera_de_hora = true
             $metodoOut = $asis
                 ? (($asis->metodo === 'MANUAL' && data_get($asis, 'meta.fuera_de_hora')) ? 'MANUAL_JUSTIFICADA' : $asis->metodo)
                 : null;
@@ -380,11 +399,13 @@ class AsistenciasController extends Controller
         ], 200);
     }
 
-    // ============================================================
-    // CONSULTA / REPORTE / VALIDACIÓN
-    // ============================================================
+    /** GET /api/vm/sesiones/{sesion}/asistencias (STAFF) */
     public function listarAsistencias(Request $request, VmSesion $sesion): JsonResponse
     {
+        $user = $request->user();
+        if (!$user) return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
+        if (!$user->can('ep.manage.ep_sede')) return response()->json(['ok'=>false,'message'=>'NO_AUTORIZADO'], 403);
+
         $rows = VmAsistencia::query()
             ->with(['expediente.user:id,first_name,last_name,doc_numero'])
             ->where('sesion_id', $sesion->id)
@@ -397,7 +418,7 @@ class AsistenciasController extends Controller
 
                 return [
                     'id'          => $a->id,
-                    'metodo'      => $metodoOut,            // 👈 front ve “MANUAL_JUSTIFICADA” si aplica
+                    'metodo'      => $metodoOut,
                     'estado'      => $a->estado,
                     'check_in_at' => $a->check_in_at,
                     'minutos'     => $a->minutos_validados,
@@ -411,8 +432,13 @@ class AsistenciasController extends Controller
         return response()->json(['ok'=>true,'data'=>$rows], 200);
     }
 
+    /** GET /api/vm/sesiones/{sesion}/reporte (STAFF) */
     public function reporte(Request $request, VmSesion $sesion)
     {
+        $user = $request->user();
+        if (!$user) return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
+        if (!$user->can('ep.manage.ep_sede')) return response()->json(['ok'=>false,'message'=>'NO_AUTORIZADO'], 403);
+
         $format = $request->query('format','json');
 
         $query = VmAsistencia::query()
@@ -422,7 +448,7 @@ class AsistenciasController extends Controller
                 'vm_asistencias.check_in_at',
                 'vm_asistencias.estado',
                 'vm_asistencias.minutos_validados',
-                'vm_asistencias.meta', // 👈 para poder decidir si fue justificada
+                'vm_asistencias.meta',
                 'expedientes_academicos.codigo_estudiante',
                 'users.doc_numero as dni',
                 'users.first_name',
@@ -464,7 +490,6 @@ class AsistenciasController extends Controller
             return new StreamedResponse($callback, 200, $headers);
         }
 
-        // JSON
         $data = $query->get()->map(function ($r) {
             $r->metodo = ($r->metodo === 'MANUAL' && data_get($r, 'meta.fuera_de_hora'))
                 ? 'MANUAL_JUSTIFICADA'
@@ -476,8 +501,13 @@ class AsistenciasController extends Controller
         return response()->json(['ok'=>true,'data'=>$data], 200);
     }
 
+    /** POST /api/vm/sesiones/{sesion}/asistencias/validar (STAFF) */
     public function validarAsistencias(Request $request, VmSesion $sesion): JsonResponse
     {
+        $user = $request->user();
+        if (!$user) return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
+        if (!$user->can('ep.manage.ep_sede')) return response()->json(['ok'=>false,'message'=>'NO_AUTORIZADO'], 403);
+
         $minSesion = $this->svc->minutosSesion($sesion);
 
         $payload = $request->validate([
@@ -496,9 +526,9 @@ class AsistenciasController extends Controller
 
         $total = 0; $svc = $this->svc;
 
-        DB::transaction(function () use ($q, $minSesion, $crearReg, $svc, &$total) {
-            $q->lockForUpdate()->get()->each(function (VmAsistencia $a) use ($minSesion, $crearReg, $svc, &$total) {
-                $svc->validarAsistencia($a, $minSesion, $crearReg);
+        DB::transaction(function () use ($q, $minSesion, $crearReg, $svc, $user, &$total) {
+            $q->lockForUpdate()->get()->each(function (VmAsistencia $a) use ($minSesion, $crearReg, $svc, $user, &$total) {
+                $svc->validarAsistencia($user, $a, $minSesion, $crearReg);
                 $total++;
             });
         });
@@ -517,19 +547,17 @@ class AsistenciasController extends Controller
     // ============================================================
     // Helpers locales
     // ============================================================
-    /** Sincroniza registro_horas y actualiza minutos en asistencia. */
+
     private function crearOActualizarRegistroHorasLocal(
         VmAsistencia $a,
         VmSesion $sesion,
         ExpedienteAcademico $exp,
         bool $justificada = false
     ): void {
-        // ✅ Evita “Double time specification”
         $inicio = \Carbon\Carbon::parse($sesion->fecha)->setTimeFromTimeString($sesion->hora_inicio);
         $fin    = \Carbon\Carbon::parse($sesion->fecha)->setTimeFromTimeString($sesion->hora_fin);
         $min    = max(0, $inicio->diffInMinutes($fin, false));
 
-        // periodo heurístico por fecha de sesión
         $fechaSesion = \Carbon\Carbon::parse($sesion->fecha);
         $periodoId   = DB::table('periodos_academicos')
             ->whereDate('fecha_inicio','<=',$fechaSesion->toDateString())

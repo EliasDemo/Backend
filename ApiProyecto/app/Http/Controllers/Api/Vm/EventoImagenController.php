@@ -22,6 +22,9 @@ class EventoImagenController extends Controller
     public function index(VmEvento $evento): JsonResponse
     {
         $user = request()->user();
+        if (!$user) {
+            return response()->json(['ok' => false, 'message' => 'No autenticado.'], 401);
+        }
 
         if (!$this->userCanManageEvento($user->id, $evento)) {
             return response()->json(['ok' => false, 'message' => 'No autorizado para este evento.'], 403);
@@ -42,6 +45,9 @@ class EventoImagenController extends Controller
     public function store(Request $request, VmEvento $evento): JsonResponse
     {
         $user = $request->user();
+        if (!$user) {
+            return response()->json(['ok' => false, 'message' => 'No autenticado.'], 401);
+        }
 
         if (!$this->userCanManageEvento($user->id, $evento)) {
             return response()->json(['ok' => false, 'message' => 'No autorizado para este evento.'], 403);
@@ -63,12 +69,12 @@ class EventoImagenController extends Controller
 
         /** @var FilesystemAdapter $fs */
         $fs = Storage::disk($disk);
-        $absoluteUrl = $fs->url($path); // requiere storage:link y filesystems.php configurado
+        $absoluteUrl = $fs->url($path); // requiere storage:link
 
         $img = $evento->imagenes()->create([
             'disk'        => $disk,
             'path'        => $path,
-            'url'         => $absoluteUrl, // guardamos URL absoluta
+            'url'         => $absoluteUrl,
             'titulo'      => null,
             'visibilidad' => 'PUBLICA',
             'subido_por'  => $user->id,
@@ -86,6 +92,9 @@ class EventoImagenController extends Controller
     public function destroy(VmEvento $evento, Imagen $imagen): SymfonyResponse
     {
         $user = request()->user();
+        if (!$user) {
+            return response()->json(['ok' => false, 'message' => 'No autenticado.'], 401);
+        }
 
         if (!$this->userCanManageEvento($user->id, $evento)) {
             return response()->json(['ok' => false, 'message' => 'No autorizado para este evento.'], 403);
@@ -101,14 +110,12 @@ class EventoImagenController extends Controller
 
         $imagen->delete();
 
-        // 204 No Content
-        return response()->noContent();
-        // Alternativa:
-        // return response()->json(null, 204);
+        return response()->noContent(); // 204
     }
 
     /**
      * Autoriza al usuario según el target del evento.
+     * Usa EpScopeService (internamente Spatie permissions).
      */
     private function userCanManageEvento(int $userId, VmEvento $evento): bool
     {
@@ -117,7 +124,7 @@ class EventoImagenController extends Controller
 
         return match ($type) {
             'ep_sede'  => EpScopeService::userManagesEpSede($userId, $id),
-            'sede'     => EpScopeService::userManagesSede($userId, $id),
+            'sede'     => EpScopeService::userManagesSede($userId,  $id),
             'facultad' => EpScopeService::userManagesFacultad($userId, $id),
             default    => false,
         };

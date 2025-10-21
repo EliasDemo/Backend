@@ -16,11 +16,13 @@ class ExpedienteAcademico extends Model
         'ep_sede_id',
         'codigo_estudiante',
         'grupo',
+        'ciclo',
         'correo_institucional',
         'estado',
         'rol',
         'vigente_desde',
         'vigente_hasta',
+
     ];
 
     /* =====================

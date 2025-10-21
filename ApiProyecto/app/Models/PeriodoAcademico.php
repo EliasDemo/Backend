@@ -29,9 +29,7 @@ class PeriodoAcademico extends Model
 
     public const ESTADOS = ['PLANIFICADO', 'EN_CURSO', 'CERRADO'];
 
-    /* =====================
-     | Relaciones
-     |=====================*/
+    // Relaciones
     public function matriculas()
     {
         return $this->hasMany(Matricula::class, 'periodo_id');
@@ -52,9 +50,7 @@ class PeriodoAcademico extends Model
         return $this->hasMany(RegistroHora::class, 'periodo_id');
     }
 
-    /* =====================
-     | Scopes útiles
-     |=====================*/
+    // Scopes útiles
     public function scopeActual($query)
     {
         return $query->where('es_actual', true);

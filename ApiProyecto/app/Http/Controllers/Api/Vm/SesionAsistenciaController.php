@@ -3,75 +3,116 @@
 namespace App\Http\Controllers\Api\Vm;
 
 use App\Http\Controllers\Controller;
+use App\Models\VmSesion;
+use App\Services\Auth\EpScopeService;
+use App\Services\Vm\AsistenciaService;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
-use Carbon\Carbon;
+use Illuminate\Validation\ValidationException;
 
+/**
+ * SesionAsistenciaController
+ * Apertura de ventanas de asistencia (QR / Manual) para sesiones.
+ * 🔐 Permiso: el usuario debe gestionar la EP_SEDE de la sesión.
+ * Además, AsistenciaService valida internamente `ep.manage.ep_sede`.
+ */
 class SesionAsistenciaController extends Controller
 {
-    // POST /api/vm/sesiones/{sesion}/qr
-    public function abrirVentanaQr(Request $request, int $sesion): JsonResponse
+    public function __construct(private AsistenciaService $svc) {}
+
+    /**
+     * POST /api/vm/sesiones/{sesion}/qr
+     * Abre una ventana QR (30 min por defecto según el service).
+     * Body: { max_usos?, lat?, lng?, radio_m? }
+     */
+    public function abrirVentanaQr(Request $request, VmSesion $sesion): JsonResponse
     {
         $user = $request->user();
 
-        // validar que la sesión exista y pertenezca a un proyecto de mis EP_SEDE
-        $row = DB::table('vm_sesiones as s')
-            ->join('vm_procesos as p', function ($j) {
-                $j->on('p.id', '=', 's.sessionable_id')
-                  ->where('s.sessionable_type', '=', \App\Models\VmProceso::class);
-            })
-            ->join('vm_proyectos as pr', 'pr.id', '=', 'p.proyecto_id')
-            ->select('s.id','pr.ep_sede_id')
-            ->where('s.id', $sesion)
-            ->first();
-
-        if (!$row) {
-            return response()->json(['ok' => false, 'message' => 'Sesión no encontrada.'], 404);
+        // Pre-chequeo de alcance (EP_SEDE)
+        $epSedeId = $this->svc->epSedeIdDesdeSesion($sesion);
+        if (!$epSedeId) {
+            return response()->json(['ok'=>false, 'message'=>'La sesión no está vinculada a una EP_SEDE.'], 422);
+        }
+        if (!EpScopeService::userManagesEpSede($user->id, (int)$epSedeId)) {
+            return response()->json(['ok'=>false, 'message'=>'No autorizado para esta EP_SEDE.'], 403);
         }
 
-        // el usuario debe ser COORDINADOR/ENCARGADO en esa EP_SEDE
-        $puede = DB::table('expedientes_academicos')
-            ->where('user_id', $user->id)
-            ->where('estado', 'ACTIVO')
-            ->where('ep_sede_id', $row->ep_sede_id)
-            ->whereIn('rol', ['COORDINADOR','ENCARGADO'])
-            ->exists();
+        $data = $request->validate([
+            'max_usos' => ['nullable','integer','min:1'],
+            'lat'      => ['nullable','numeric','between:-90,90'],
+            'lng'      => ['nullable','numeric','between:-180,180'],
+            'radio_m'  => ['nullable','integer','min:10','max:5000'],
+        ]);
 
-        if (!$puede) {
-            return response()->json(['ok' => false, 'message' => 'No autorizado para abrir QR en esta sesión.'], 403);
+        $geo = (isset($data['lat'], $data['lng'], $data['radio_m']))
+            ? ['lat'=>$data['lat'], 'lng'=>$data['lng'], 'radio_m'=>$data['radio_m']]
+            : null;
+
+        try {
+            $t = $this->svc->generarToken(
+                actor:   $user,           // 👈 firma: (User $actor, VmSesion $sesion, ...)
+                sesion:  $sesion,
+                tipo:    'QR',
+                geo:     $geo,
+                maxUsos: $data['max_usos'] ?? null,
+                creadoPor: $user->id
+            );
+
+            return response()->json([
+                'ok'   => true,
+                'code' => 'QR_OPENED',
+                'data' => [
+                    'token'       => $t->token,
+                    'usable_from' => $t->usable_from,
+                    'expires_at'  => $t->expires_at,
+                    'geo'         => $geo,
+                ],
+            ], 201);
+        } catch (AuthorizationException $e) {
+            return response()->json(['ok'=>false,'message'=>'NO_AUTORIZADO_EP_SEDE'], 403);
+        } catch (ValidationException $e) {
+            return response()->json(['ok'=>false,'message'=>'VALIDATION_ERROR','errors'=>$e->errors()], 422);
+        }
+    }
+
+    /**
+     * POST /api/vm/sesiones/{sesion}/activar-manual
+     * Abre ventana MANUAL alineada a la sesión (inicio-1h a fin+1h en el service).
+     */
+    public function activarManual(Request $request, VmSesion $sesion): JsonResponse
+    {
+        $user = $request->user();
+
+        $epSedeId = $this->svc->epSedeIdDesdeSesion($sesion);
+        if (!$epSedeId) {
+            return response()->json(['ok'=>false, 'message'=>'La sesión no está vinculada a una EP_SEDE.'], 422);
+        }
+        if (!EpScopeService::userManagesEpSede($user->id, (int)$epSedeId)) {
+            return response()->json(['ok'=>false, 'message'=>'No autorizado para esta EP_SEDE.'], 403);
         }
 
-        $now = Carbon::now();
-        $usable = $now;
-        $expires = $now->copy()->addMinutes(30);
+        try {
+            $t = $this->svc->generarTokenManualAlineado(
+                actor:    $user,
+                sesion:   $sesion,
+                creadoPor:$user->id
+            );
 
-        $maxUsos = $request->integer('max_usos') ?: null;
-
-        $token = Str::random(40);
-
-        $id = DB::table('vm_qr_tokens')->insertGetId([
-            'sesion_id'    => $sesion,
-            'token'        => $token,
-            'usable_from'  => $usable,
-            'expires_at'   => $expires,
-            'max_usos'     => $maxUsos,
-            'usos'         => 0,
-            'activo'       => 1,
-            'creado_por'   => $user->id,
-            'created_at'   => now(),
-            'updated_at'   => now(),
-        ]);
-
-        return response()->json([
-            'ok' => true,
-            'data' => [
-                'token'       => $token,
-                'usable_from' => $usable->format('Y-m-d H:i:s'),
-                'expires_at'  => $expires->format('Y-m-d H:i:s'),
-                'geo'         => null,
-            ],
-        ]);
+            return response()->json([
+                'ok'   => true,
+                'code' => 'MANUAL_OPENED',
+                'data' => [
+                    'usable_from' => $t->usable_from,
+                    'expires_at'  => $t->expires_at,
+                    'token_id'    => $t->id,
+                ],
+            ], 201);
+        } catch (AuthorizationException $e) {
+            return response()->json(['ok'=>false,'message'=>'NO_AUTORIZADO_EP_SEDE'], 403);
+        } catch (ValidationException $e) {
+            return response()->json(['ok'=>false,'message'=>'VALIDATION_ERROR','errors'=>$e->errors()], 422);
+        }
     }
 }

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\User;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\User\UserDetailResource;
 use App\Models\User;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -12,9 +13,9 @@ class UserController extends Controller
 {
     /**
      * GET /api/users/me
-     * Perfil completo del autenticado (roles, permisos, expedientes, sede, escuela, facultad, universidad, etc.)
+     * Perfil completo del autenticado (permisos, expedientes, sede, escuela, facultad, universidad, etc.)
      */
-    public function me(Request $request)
+    public function me(Request $request): JsonResponse
     {
         /** @var \App\Models\User|null $user */
         $user = $request->user();
@@ -37,9 +38,20 @@ class UserController extends Controller
     /**
      * GET /api/users/by-username/{username}
      * Busca por username y devuelve toda la información vinculada.
+     * Regla de permiso:
+     *  - Si consulta su propio username -> NO requiere permiso extra.
+     *  - Si consulta el de otra persona -> requiere 'user.view.any'.
      */
-    public function showByUsername(string $username)
+    public function showByUsername(string $username): JsonResponse
     {
+        $actor = request()->user();
+        if (!$actor) {
+            return response()->json(['ok'=>false,'message'=>'No autenticado.'], Response::HTTP_UNAUTHORIZED);
+        }
+        if ($actor->username !== $username && !$actor->can('user.view.any')) {
+            return response()->json(['ok'=>false,'message'=>'NO_AUTORIZADO'], Response::HTTP_FORBIDDEN);
+        }
+
         /** @var \App\Models\User $user */
         $user = User::query()
             ->where('username', $username)

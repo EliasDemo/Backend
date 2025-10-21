@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Models\EpSede;
 use App\Models\Facultad;
 use App\Models\Sede;
+use App\Models\Universidad;
 use App\Models\VmEvento;
 use App\Models\VmProceso;
 use App\Models\VmProyecto;
@@ -23,38 +24,38 @@ final class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        // ✅ Aliases CANÓNICOS (lo que se guardará de ahora en adelante)
         $canonical = [
-            'user'        => User::class,        // Spatie model_has_* agradece un alias estable
-            'vm_proyecto' => VmProyecto::class,
-            'vm_proceso'  => VmProceso::class,
-            'vm_evento'   => VmEvento::class,
-            'ep_sede'     => EpSede::class,
-            'sede'        => Sede::class,
-            'facultad'    => Facultad::class,
+            'user'         => \App\Models\User::class,
+            'vm_proyecto'  => \App\Models\VmProyecto::class,
+            'vm_proceso'   => \App\Models\VmProceso::class,
+            'vm_evento'    => \App\Models\VmEvento::class,
+            'ep_sede'      => \App\Models\EpSede::class,
+            'sede'         => \App\Models\Sede::class,
+            'facultad'     => \App\Models\Facultad::class,
+            'universidad'  => \App\Models\Universidad::class, // 👈 alias canónico
         ];
 
-        // ♻️ Compatibilidad hacia atrás (tipos que ya podrían existir en la BD)
-        $backwardCompatibility = [
-            // FQCN que pudieron guardarse antes
-            'App\\Models\\User'       => User::class,
-            'App\\Models\\VmProyecto' => VmProyecto::class,
-            'App\\Models\\VmProceso'  => VmProceso::class,
-            'App\\Models\\VmEvento'   => VmEvento::class,
-            'App\\Models\\EpSede'     => EpSede::class,
-            'App\\Models\\Sede'       => Sede::class,
-            'App\\Models\\Facultad'   => Facultad::class,
-
-            // Aliases antiguos en PascalCase
-            'VmProceso'               => VmProceso::class,
-            'VmEvento'                => VmEvento::class,
-
-
+        $backward = [
+            'App\\Models\\User'        => \App\Models\User::class,
+            'App\\Models\\VmProyecto'  => \App\Models\VmProyecto::class,
+            'App\\Models\\VmProceso'   => \App\Models\VmProceso::class,
+            'App\\Models\\VmEvento'    => \App\Models\VmEvento::class,
+            'App\\Models\\EpSede'      => \App\Models\EpSede::class,
+            'App\\Models\\Sede'        => \App\Models\Sede::class,
+            'App\\Models\\Facultad'    => \App\Models\Facultad::class,
+            'App\\Models\\Universidad' => \App\Models\Universidad::class, // 👈 FQCN histórico
+            'VmProceso'                => \App\Models\VmProceso::class,
+            'VmEvento'                 => \App\Models\VmEvento::class,
+            'Universidad'              => \App\Models\Universidad::class, // 👈 alias viejo
         ];
 
-        // Importante: los canónicos primero ⇒ Eloquent usará esos al guardar.
-        $map = $canonical + $backwardCompatibility;
+        $map = $canonical + $backward;
 
-        Relation::enforceMorphMap($map);
+        // Opción flexible (no rompe si encuentra algo fuera del mapa):
+        Relation::morphMap($map);
+
+        // Si prefieres “romper” cuando haya algo fuera del mapa, usa esta en lugar de la anterior,
+        // pero SOLO después de normalizar la BD (paso 3):
+        // Relation::enforceMorphMap($map);
     }
 }

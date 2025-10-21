@@ -3,12 +3,16 @@
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
+use Illuminate\Support\Facades\Cache;   // 👈
+
+// Usar Redis como store del scheduler (mutex / overlapping / leader election)
+Schedule::useCache(config('cache.default')); // ✅ string del store
 
 /*
 |--------------------------------------------------------------------------
 | Console Routes (Laravel 12)
 |--------------------------------------------------------------------------
-| Asegúrate del cron del sistema:
+| Cron del sistema:
 | * * * * * php /ruta/a/tu/app/artisan schedule:run >> /dev/null 2>&1
 */
 
@@ -18,11 +22,19 @@ Artisan::command('inspire', function () {
 ->purpose('Display an inspiring quote')
 ->hourly();
 
+// Tick
 Schedule::command('vm:tick')
     ->everyMinute()
-    ->withoutOverlapping()
-    // en local y production (agrega 'staging' si aplica)
+    ->onOneServer()             // 👈 solo un nodo del clúster lo ejecuta
+    ->withoutOverlapping(10)    // 👈 evita solaparse si tarda >1 min (TTL 10 min)
     ->environments(['local','production'])
-    // en local quita onOneServer si no usas Redis/Memcached
-    // ->onOneServer()
     ->description('Actualiza estados de sesiones/procesos/proyectos/eventos');
+
+// Autocierre de interinatos
+Schedule::command('ep:staff:auto-close-interinatos')
+    ->dailyAt('00:15')
+    ->timezone(config('app.timezone'))
+    ->onOneServer()             // 👈 ejecución única en el clúster
+    ->withoutOverlapping()
+    ->environments(['local','production'])
+    ->description('Cierra interinatos vencidos (vigente_hasta < hoy) y registra AUTO_END');

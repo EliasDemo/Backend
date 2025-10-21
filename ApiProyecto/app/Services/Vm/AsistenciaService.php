@@ -14,25 +14,44 @@ use App\Models\RegistroHora;
 use App\Models\ExpedienteAcademico;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Auth\Access\AuthorizationException;
 use Carbon\Carbon;
 
+/**
+ * Reglas de permisos:
+ * - Solo se exige permiso cuando la acción es de GESTIÓN sobre la EP-Sede vinculada a la sesión.
+ * - Se reutiliza SIEMPRE el MISMO permiso: 'ep.manage.ep_sede'.
+ * - Consultas auxiliares / utilidades NO requieren permiso.
+ */
 class AsistenciaService
 {
     public const WINDOW_MINUTES = 30;
 
+    // 🔐 Permiso único reutilizado para todas las gestiones
+    public const PERM_MANAGE_EP_SEDE = 'ep.manage.ep_sede';
+
     // =========================
-    // TOKENS
+    // TOKENS (REQUIEREN PERMISO)
     // =========================
+
+    /**
+     * Generar token (QR o MANUAL) para una sesión.
+     * 🔐 Requiere: ep.manage.ep_sede sobre la EP-Sede de la sesión.
+     */
     public function generarToken(
+        User $actor,
         VmSesion $sesion,
         string $tipo = 'QR',
         ?array $geo = null,
         ?int $maxUsos = null,
         ?int $creadoPor = null
     ): VmQrToken {
+        $epSedeId = $this->epSedeIdDesdeSesion($sesion);
+        $this->assertCanManageEpSede($actor, $epSedeId);
+
         $now = now();
 
-        return DB::transaction(function () use ($sesion, $tipo, $geo, $maxUsos, $creadoPor, $now) {
+        return DB::transaction(function () use ($sesion, $tipo, $geo, $maxUsos, $creadoPor, $now, $actor) {
             $t = new VmQrToken();
             $t->forceFill([
                 'sesion_id'   => $sesion->id,
@@ -43,10 +62,10 @@ class AsistenciaService
                 'max_usos'    => $maxUsos,
                 'usos'        => 0,
                 'activo'      => true,
-                'creado_por'  => $creadoPor,
-                'lat'         => $geo['lat']    ?? null,
-                'lng'         => $geo['lng']    ?? null,
-                'radio_m'     => $geo['radio_m']?? null,
+                'creado_por'  => $creadoPor ?? $actor->id,
+                'lat'         => $geo['lat']     ?? null,
+                'lng'         => $geo['lng']     ?? null,
+                'radio_m'     => $geo['radio_m'] ?? null,
                 'meta'        => null,
             ])->save();
 
@@ -54,12 +73,21 @@ class AsistenciaService
         });
     }
 
-    /** Token MANUAL alineado a la sesión (±1h respecto al horario de la sesión). */
-    public function generarTokenManualAlineado(VmSesion $sesion, ?int $creadoPor = null): VmQrToken
-    {
+    /**
+     * Token MANUAL alineado a la sesión (±1h).
+     * 🔐 Requiere: ep.manage.ep_sede.
+     */
+    public function generarTokenManualAlineado(
+        User $actor,
+        VmSesion $sesion,
+        ?int $creadoPor = null
+    ): VmQrToken {
+        $epSedeId = $this->epSedeIdDesdeSesion($sesion);
+        $this->assertCanManageEpSede($actor, $epSedeId);
+
         [$start, $end] = $this->timeWindowForSesion($sesion);
 
-        return DB::transaction(function () use ($sesion, $creadoPor, $start, $end) {
+        return DB::transaction(function () use ($sesion, $creadoPor, $start, $end, $actor) {
             $t = new VmQrToken();
             $t->forceFill([
                 'sesion_id'   => $sesion->id,
@@ -70,11 +98,15 @@ class AsistenciaService
                 'max_usos'    => null,
                 'usos'        => 0,
                 'activo'      => true,
-                'creado_por'  => $creadoPor,
+                'creado_por'  => $creadoPor ?? $actor->id,
             ])->save();
             return $t->refresh();
         });
     }
+
+    // =========================
+    // VALIDACIONES TOKEN/UBICACIÓN (NO requieren permiso)
+    // =========================
 
     public function checkVentana(VmQrToken $t): void
     {
@@ -109,8 +141,9 @@ class AsistenciaService
     }
 
     // =========================
-    // UTILIDADES FECHAS
+    // UTILIDADES FECHAS (NO requieren permiso)
     // =========================
+
     public function minutosSesion(VmSesion $sesion): int
     {
         if ($sesion->hora_inicio && $sesion->hora_fin) {
@@ -151,12 +184,13 @@ class AsistenciaService
     }
 
     // =========================
-    // RESOLUCIONES ESTRUCTURALES ROBUSTAS
+    // RESOLUCIONES ESTRUCTURALES (NO requieren permiso)
     // =========================
+
     /** [ptype, pid, ep_sede_id, periodo_id] detectados a partir de la sesión. */
     protected function datosDesdeSesion(VmSesion $sesion): array
     {
-        // 1) Intento normal vía morphTo
+        // 1) morphTo
         $owner = $sesion->sessionable; // VmProceso | VmEvento | null
 
         if ($owner instanceof VmProceso) {
@@ -169,7 +203,7 @@ class AsistenciaService
             return [VmEvento::class, (int)$owner->id, (int)$owner->ep_sede_id, (int)$owner->periodo_id];
         }
 
-        // 2) Fallback robusto si el morph no resolvió (aliases viejos en DB)
+        // 2) Fallback robusto
         $type = strtolower((string) $sesion->sessionable_type);
         $sid  = (int) $sesion->sessionable_id;
 
@@ -206,17 +240,36 @@ class AsistenciaService
     }
 
     // =========================
-    // EXPEDIENTES
+    // EXPEDIENTES (permiso solo para terceros)
     // =========================
-    public function resolverExpedientePorUser(User $user, ?int $epSedeId): ?ExpedienteAcademico
+
+    /**
+     * Resolver expediente de un user dentro de una EP-Sede.
+     * - Si $actor === $user => NO requiere permiso.
+     * - Si $actor !== $user => 🔐 requiere ep.manage.ep_sede.
+     */
+    public function resolverExpedientePorUser(User $actor, User $user, ?int $epSedeId): ?ExpedienteAcademico
     {
         if (!$epSedeId) return null;
-        return ExpedienteAcademico::where('user_id', $user->id)->where('ep_sede_id', $epSedeId)->first();
+
+        if ($actor->id !== $user->id) {
+            $this->assertCanManageEpSede($actor, $epSedeId);
+        }
+
+        return ExpedienteAcademico::where('user_id', $user->id)
+            ->where('ep_sede_id', $epSedeId)
+            ->first();
     }
 
-    public function resolverExpedientePorIdentificador(string $dniOCodigo, ?int $epSedeId): ?ExpedienteAcademico
+    /**
+     * Resolver expediente por DNI o código estudiantil en una EP-Sede.
+     * 🔐 Requiere ep.manage.ep_sede (acceso a datos de terceros).
+     */
+    public function resolverExpedientePorIdentificador(User $actor, string $dniOCodigo, ?int $epSedeId): ?ExpedienteAcademico
     {
         if (!$epSedeId) return null;
+
+        $this->assertCanManageEpSede($actor, $epSedeId);
 
         return ExpedienteAcademico::query()
             ->where('ep_sede_id', $epSedeId)
@@ -230,13 +283,26 @@ class AsistenciaService
     // =========================
     // ASISTENCIAS
     // =========================
+
+    /**
+     * Crear/actualizar asistencia.
+     * - Con token QR válido: NO requiere permiso (flujo autoatendido).
+     * - Manual (sin token): 🔐 requiere ep.manage.ep_sede.
+     */
     public function upsertAsistencia(
+        User $actor,
         VmSesion $sesion,
         ExpedienteAcademico $exp,
         string $metodo,
         ?VmQrToken $token = null,
         ?array $meta = null
     ): VmAsistencia {
+        $isManual = strtoupper($metodo) === 'MANUAL' || !$token;
+        if ($isManual) {
+            $epSedeId = $this->epSedeIdDesdeSesion($sesion);
+            $this->assertCanManageEpSede($actor, $epSedeId);
+        }
+
         return DB::transaction(function () use ($sesion, $exp, $metodo, $token, $meta) {
             /** @var VmAsistencia $a */
             $a = VmAsistencia::firstOrNew([
@@ -275,8 +341,16 @@ class AsistenciaService
         });
     }
 
-    public function validarAsistencia(VmAsistencia $a, int $minutos, bool $crearRegistroHoras = true): VmAsistencia
+    /**
+     * Validar asistencia (y crear/actualizar RegistroHora).
+     * 🔐 Requiere ep.manage.ep_sede.
+     */
+    public function validarAsistencia(User $actor, VmAsistencia $a, int $minutos, bool $crearRegistroHoras = true): VmAsistencia
     {
+        $sesion = $a->sesion;
+        $epSedeId = $this->epSedeIdDesdeSesion($sesion);
+        $this->assertCanManageEpSede($actor, $epSedeId);
+
         $a->estado = 'VALIDADO';
         $a->minutos_validados = $minutos;
         $a->check_out_at = $a->check_out_at ?? now();
@@ -288,6 +362,9 @@ class AsistenciaService
         return $a;
     }
 
+    // =========================
+    // Registro de horas (NO requiere permiso directo; se valida en validarAsistencia)
+    // =========================
     protected function crearOActualizarRegistroHora(VmAsistencia $a, int $minutos): void
     {
         $sesion = $a->sesion;
@@ -314,5 +391,24 @@ class AsistenciaService
             $reg->estado  = 'APROBADO';
         }
         $reg->save();
+    }
+
+    // =========================
+    // Helpers de autorización
+    // =========================
+
+    /**
+     * Lanza AuthorizationException si el actor no puede gestionar la EP-Sede.
+     */
+    protected function assertCanManageEpSede(User $actor, ?int $epSedeId): void
+    {
+        if (!$epSedeId) {
+            throw ValidationException::withMessages(['sesion' => 'SESION_SIN_EP_SEDE']);
+        }
+        if (!$actor->can(self::PERM_MANAGE_EP_SEDE)) {
+            throw new AuthorizationException('NO_AUTORIZADO_EP_SEDE');
+        }
+        // Si usas Spatie Teams/tenancy, aquí podrías validar team=EP-Sede:
+        // if (! $actor->can(self::PERM_MANAGE_EP_SEDE, $epSedeId)) { ... }
     }
 }
