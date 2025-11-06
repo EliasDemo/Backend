@@ -89,6 +89,8 @@ Route::middleware(['auth:sanctum'])->prefix('vm')->group(function () {
         ->name('vm.alumno.proyectos.show');
 });
 
+
+
 /**
  * 2️⃣ RUTAS DE GESTIÓN (con permisos por endpoint)
  */
@@ -252,6 +254,13 @@ Route::middleware(['auth:sanctum'])->prefix('vm')->group(function () {
         ->whereNumber('sesion')
         ->middleware('permission:vm.asistencia.validar')
         ->name('vm.sesiones.validar');
+
+        // Calificar (EVALUACION / MIXTO)
+    Route::post('/procesos/{proceso}/calificar', [AsistenciasController::class, 'calificarEvaluacion'])
+        ->whereNumber('proceso')
+        ->middleware('permission:vm.proceso.calificar')
+        ->name('vm.procesos.calificar');
+
 });
 
 Route::middleware('auth:sanctum')

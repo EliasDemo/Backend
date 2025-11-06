@@ -554,14 +554,16 @@ class AsistenciasController extends Controller
         ExpedienteAcademico $exp,
         bool $justificada = false
     ): void {
-        $inicio = \Carbon\Carbon::parse($sesion->fecha)->setTimeFromTimeString($sesion->hora_inicio);
-        $fin    = \Carbon\Carbon::parse($sesion->fecha)->setTimeFromTimeString($sesion->hora_fin);
-        $min    = max(0, $inicio->diffInMinutes($fin, false));
+        // Usar límites REALES de la sesión y corregir cruce de medianoche
+        [$inicio, $fin] = $this->svc->boundsForSesion($sesion);
+        $min = $inicio->diffInMinutes($fin);
 
-        $fechaSesion = \Carbon\Carbon::parse($sesion->fecha);
+        // Fecha del registro: día de INICIO de la sesión
+        $fechaSesion = $inicio->toDateString();
+
         $periodoId   = DB::table('periodos_academicos')
-            ->whereDate('fecha_inicio','<=',$fechaSesion->toDateString())
-            ->whereDate('fecha_fin','>=',$fechaSesion->toDateString())
+            ->whereDate('fecha_inicio','<=',$fechaSesion)
+            ->whereDate('fecha_fin','>=',$fechaSesion)
             ->value('id');
 
         DB::table('registro_horas')->updateOrInsert(
@@ -570,7 +572,7 @@ class AsistenciasController extends Controller
                 'expediente_id'  => $exp->id,
                 'ep_sede_id'     => $exp->ep_sede_id,
                 'periodo_id'     => $periodoId,
-                'fecha'          => $fechaSesion->toDateString(),
+                'fecha'          => $fechaSesion,
                 'minutos'        => $min,
                 'actividad'      => ($justificada ? 'Asistencia (justificada) a sesión #' : 'Asistencia a sesión #') . $sesion->id,
                 'estado'         => 'APROBADO',
@@ -593,5 +595,145 @@ class AsistenciasController extends Controller
             'message' => $message,
             'meta'    => (object) $meta,
         ], $status);
+    }
+
+    // ============================================================
+    // NUEVO: Calificar (EVALUACION / MIXTO)
+    // ============================================================
+
+    public function calificarEvaluacion(Request $request, \App\Models\VmProceso $proceso): \Illuminate\Http\JsonResponse
+    {
+        $user = $request->user();
+        if (!$user) return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
+        if (!$user->can('ep.manage.ep_sede')) return response()->json(['ok'=>false,'message'=>'NO_AUTORIZADO'], 403);
+
+        $proyecto = $proceso->proyecto()->firstOrFail();
+        $tipo = strtoupper((string) $proceso->tipo_registro);
+        if (!in_array($tipo, ['EVALUACION','MIXTO'], true)) {
+            return response()->json(['ok'=>false,'code'=>'PROCESO_NO_EVALUABLE','message'=>'Solo aplica para procesos EVALUACION o MIXTO.'], 422);
+        }
+        if (is_null($proceso->nota_minima)) {
+            return response()->json(['ok'=>false,'code'=>'NOTA_MINIMA_NO_CONFIGURADA','message'=>'El proceso no tiene nota_minima configurada.'], 422);
+        }
+
+        $data = $request->validate([
+            'codigo'        => ['nullable','string','max:191'],
+            'expediente_id' => ['nullable','integer','exists:expedientes_academicos,id'],
+            'sesion_id'     => ['required','integer','exists:vm_sesiones,id'],
+            'nota'          => ['required','integer','min:0','max:100'],
+            'otorgar_horas' => ['nullable','boolean'],
+            'ajustar_a_minutos_sesion' => ['nullable','boolean'],
+        ]);
+        if (empty($data['codigo']) && empty($data['expediente_id'])) {
+            return response()->json(['ok'=>false,'code'=>'FALTA_IDENTIFICADOR','message'=>'Envía codigo o expediente_id.'], 422);
+        }
+
+        /** @var \App\Models\VmSesion $sesion */
+        $sesion = \App\Models\VmSesion::findOrFail((int) $data['sesion_id']);
+        if ($sesion->sessionable_type !== \App\Models\VmProceso::class || (int)$sesion->sessionable_id !== (int)$proceso->id) {
+            return response()->json(['ok'=>false,'code'=>'SESION_NO_PERTENECE','message'=>'La sesión no pertenece al proceso.'], 422);
+        }
+
+        // Resolver expediente (mismo ep_sede que el proyecto)
+        $exp = $data['expediente_id']
+            ? \App\Models\ExpedienteAcademico::find((int)$data['expediente_id'])
+            : \App\Models\ExpedienteAcademico::where('codigo_estudiante', $data['codigo'] ?? '')
+                ->where('ep_sede_id', $proyecto->ep_sede_id)->first();
+
+        if (!$exp) {
+            return response()->json(['ok'=>false,'code'=>'EXPEDIENTE_NO_ENCONTRADO','message'=>'No se halló expediente en la EP_SEDE del proyecto.'], 422);
+        }
+
+        // Debe estar inscrito al proyecto
+        $inscrito = \App\Models\VmParticipacion::where([
+            'participable_type' => \App\Models\VmProyecto::class,
+            'participable_id'   => $proyecto->id,
+            'expediente_id'     => $exp->id,
+        ])->whereIn('estado', ['INSCRITO','CONFIRMADO'])->exists();
+        if (!$inscrito) {
+            return response()->json(['ok'=>false,'code'=>'NO_INSCRITO','message'=>'El estudiante no está inscrito/confirmado en el proyecto.'], 422);
+        }
+
+        $nota = (int) $data['nota'];
+        $aprobado = $nota >= (int) $proceso->nota_minima;
+        $otorgar = array_key_exists('otorgar_horas',$data) ? (bool)$data['otorgar_horas'] : true;
+        $ajustar = array_key_exists('ajustar_a_minutos_sesion',$data) ? (bool)$data['ajustar_a_minutos_sesion'] : false;
+
+        // Reglas de minutos requeridos/acumulados (consistentes con tus controladores)
+        $minReq = (int) (($proyecto->horas_minimas_participante ?: $proyecto->horas_planificadas) * 60);
+        $minAcum = (int) \App\Models\VmAsistencia::query()
+            ->where('estado','VALIDADO')
+            ->where('expediente_id',$exp->id)
+            ->whereHas('sesion', function($q) use ($proyecto) {
+                $q->where('sessionable_type', \App\Models\VmProceso::class)
+                  ->whereHas('sessionable', fn($qq) => $qq->where('proyecto_id',$proyecto->id));
+            })->sum('minutos_validados');
+
+        $faltaban = max(0, $minReq - $minAcum);
+        $minSesion = $this->svc->minutosSesion($sesion);
+
+        $abonados = 0;
+        $asistencia = null;
+
+        if ($aprobado && $otorgar && $faltaban > 0) {
+            $abonados = $faltaban;
+            if ($ajustar) $abonados = min($abonados, $minSesion);
+
+            /** @var \App\Models\VmAsistencia $a */
+            $a = \App\Models\VmAsistencia::firstOrNew(['sesion_id'=>$sesion->id,'expediente_id'=>$exp->id]);
+            $a->metodo = 'EVALUACION';
+            $a->estado = 'VALIDADO';
+            $a->check_in_at = $a->check_in_at ?: now();
+            $a->minutos_validados = (int)($a->minutos_validados ?? 0) + (int)$abonados;
+            $meta = is_array($a->meta) ? $a->meta : [];
+            $meta['calificacion'] = ['nota'=>$nota,'proceso_id'=>$proceso->id,'ajustado_a_sesion'=>$ajustar];
+            $a->meta = $meta;
+            $a->save();
+            $asistencia = $a;
+
+            $periodoId = \Illuminate\Support\Facades\DB::table('periodos_academicos')
+                ->whereDate('fecha_inicio','<=', now()->toDateString())
+                ->whereDate('fecha_fin','>=', now()->toDateString())
+                ->value('id');
+
+            \Illuminate\Support\Facades\DB::table('registro_horas')->updateOrInsert(
+                [
+                    'expediente_id'  => $exp->id,
+                    'vinculable_type'=> \App\Models\VmProceso::class,
+                    'vinculable_id'  => $proceso->id,
+                    'actividad'      => 'Calificación proceso #'.$proceso->id,
+                    'fecha'          => now()->toDateString(),
+                ],
+                [
+                    'ep_sede_id'     => $exp->ep_sede_id,
+                    'periodo_id'     => $periodoId,
+                    'minutos'        => $abonados,
+                    'estado'         => 'APROBADO',
+                    'sesion_id'      => $sesion->id,
+                    'asistencia_id'  => $a->id,
+                    'updated_at'     => now(),
+                    'created_at'     => now(),
+                ]
+            );
+        }
+
+        $nuevoAcum = $minAcum + $abonados;
+        $faltanDespues = max(0, $minReq - $nuevoAcum);
+
+        return response()->json([
+            'ok'=>true,
+            'code'=>'CALIFICADO',
+            'data'=>[
+                'aprobado'          => $aprobado,
+                'nota'              => $nota,
+                'proyecto_id'       => (int)$proyecto->id,
+                'expediente_id'     => (int)$exp->id,
+                'sesion_id'         => (int)$sesion->id,
+                'abonados_min'      => $abonados,
+                'faltaban_min'      => $faltaban,
+                'faltan_despues_min'=> $faltanDespues,
+                'asistencia_id'     => $asistencia?->id,
+            ]
+        ], 200);
     }
 }

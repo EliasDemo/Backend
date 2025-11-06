@@ -19,14 +19,6 @@ class InscripcionProyectoController extends Controller
 {
     /**
      * POST /api/vm/proyectos/{proyecto}/inscribirse
-     *
-     * Respuestas (status, code):
-     * - 201 ENROLLED
-     * - 401 UNAUTHENTICATED
-     * - 403 UNAUTHORIZED
-     * - 422 PROJECT_NOT_ACTIVE | DIFFERENT_EP_SEDE | STUDENT_NOT_ACTIVE |
-     *      NOT_ENROLLED_CURRENT_PERIOD | LEVEL_MISMATCH |
-     *      PENDING_LINKED_PREV | ALREADY_ENROLLED
      */
     public function inscribirProyecto(Request $request, VmProyecto $proyecto): JsonResponse
     {
@@ -35,7 +27,7 @@ class InscripcionProyectoController extends Controller
             return response()->json(['ok'=>false,'message'=>'No autenticado.'], 401);
         }
 
-        // Normalizar tipo: PROYECTO => VINCULADO (compatibilidad)
+        // Normalizar tipo: PROYECTO => VINCULADO (compat)
         $tipo = strtoupper((string) $proyecto->tipo);
         if ($tipo === 'PROYECTO') $tipo = 'VINCULADO';
 
@@ -49,11 +41,10 @@ class InscripcionProyectoController extends Controller
         // 2) Expediente ACTIVO del alumno en la misma EP_SEDE
         $exp = ExpedienteAcademico::where('user_id', $user->id)
             ->where('ep_sede_id', $proyecto->ep_sede_id)
-            ->where('estado', 'ACTIVO') // 👈 NUEVO: exige ACTIVO
+            ->where('estado', 'ACTIVO')
             ->first();
 
         if (!$exp) {
-            // Puede ser que no pertenezca a la sede o que no esté ACTIVO
             return $this->fail('DIFFERENT_EP_SEDE', 'No perteneces a la EP_SEDE del proyecto o tu expediente no está ACTIVO.', 422, [
                 'proyecto_ep_sede_id' => (int) $proyecto->ep_sede_id,
             ]);
@@ -70,9 +61,8 @@ class InscripcionProyectoController extends Controller
             return $this->fail('ALREADY_ENROLLED', 'Ya estás inscrito en este proyecto.', 422);
         }
 
-        // 4) Reglas por tipo
         if ($tipo === 'LIBRE') {
-            // Para LIBRE: no se exige matrícula ni ciclo, solo ACTIVO + misma sede.
+            // LIBRE: ACTIVO + misma sede
             $part = VmParticipacion::create([
                 'participable_type' => VmProyecto::class,
                 'participable_id'   => $proyecto->id,
@@ -81,12 +71,15 @@ class InscripcionProyectoController extends Controller
                 'estado'            => 'INSCRITO',
             ]);
 
+            // niveles del proyecto (posiblemente vacío en LIBRE)
+            $niveles = $proyecto->ciclos()->pluck('nivel')->values();
+
             return response()->json([
                 'ok'   => true,
                 'code' => 'ENROLLED',
                 'data' => [
                     'participacion' => $part,
-                    'proyecto'      => ['id'=>$proyecto->id, 'tipo'=>'LIBRE', 'nivel'=>$proyecto->nivel],
+                    'proyecto'      => ['id'=>$proyecto->id, 'tipo'=>'LIBRE', 'niveles'=>$niveles],
                 ],
             ], 201);
         }
@@ -96,7 +89,6 @@ class InscripcionProyectoController extends Controller
         // A) Matrícula vigente en período actual
         $periodoActual = PeriodoAcademico::query()->where('es_actual', true)->first();
         if (!$periodoActual) {
-            // Configuración inconsistente del calendario
             return $this->fail('NO_CURRENT_PERIOD', 'No hay un período académico marcado como actual.', 422);
         }
 
@@ -113,41 +105,42 @@ class InscripcionProyectoController extends Controller
             );
         }
 
-        // B) Coincidencia nivel (proyecto) = ciclo (alumno)
+        // B) Coincidencia: el ciclo del alumno debe estar entre los niveles del proyecto
         $cicloExp  = $this->toIntOrNull($exp->ciclo);
         $cicloMat  = $this->toIntOrNull($matriculaActual->ciclo);
-        $cicloEval = $cicloMat ?? $cicloExp; // prioridad: matrícula actual
+        $cicloEval = $cicloMat ?? $cicloExp;
 
-        if ($proyecto->nivel === null || $cicloEval === null || (int)$proyecto->nivel !== (int)$cicloEval) {
+        $nivelesProyecto = $proyecto->ciclos()->pluck('nivel')->map(fn($n)=>(int)$n)->values();
+        if ($cicloEval === null || !$nivelesProyecto->contains((int)$cicloEval)) {
             return $this->fail(
                 'LEVEL_MISMATCH',
-                "Este proyecto es para estudiantes del ciclo {$proyecto->nivel}.",
+                "Este proyecto es para estudiantes de los ciclos: ".($nivelesProyecto->isEmpty() ? '-' : $nivelesProyecto->implode(', ')).".",
                 422,
                 [
-                    'proyecto_nivel'  => $proyecto->nivel,
-                    'ciclo_expediente'=> $cicloExp,
-                    'ciclo_matricula' => $cicloMat,
-                    'ciclo_usado'     => $cicloEval,
+                    'niveles_proyecto' => $nivelesProyecto,
+                    'ciclo_expediente' => $cicloExp,
+                    'ciclo_matricula'  => $cicloMat,
+                    'ciclo_usado'      => $cicloEval,
                 ]
             );
         }
 
-        // C) Bloqueo si existe VINCULADO pendiente (horas < requeridas) en la misma sede
+        // C) Bloqueo si existe VINCULADO pendiente (en la misma sede; sin filtrar por ciclo)
         if ($pend = $this->buscarPendienteVinculado($exp->id, $proyecto->ep_sede_id)) {
             $reqMin = $this->minutosRequeridosProyecto($pend['proyecto']);
             $acum   = $this->minutosValidadosProyecto($pend['proyecto']->id, $exp->id);
             $faltan = max(0, $reqMin - $acum);
 
             $cerrado = in_array($pend['proyecto']->estado, ['CERRADO','CANCELADO']);
-            $msg = 'Tienes un proyecto VINCULADO pendiente (nivel '.$pend['proyecto']->nivel
-                .') del periodo '.$pend['periodo'].'; te faltan '.ceil($faltan/60)
-                .' h. '.($cerrado
+            $msg = 'Tienes un proyecto VINCULADO pendiente del periodo '.$pend['periodo']
+                .'; te faltan '.ceil($faltan/60).' h. '
+                .($cerrado
                     ? 'Ese proyecto está cerrado. No puedes inscribirte a VINCULADOS hasta regularizar. Puedes tomar LIBRES.'
                     : 'Continúa ese proyecto para completarlo.');
 
             return $this->fail('PENDING_LINKED_PREV', $msg, 422, [
                 'proyecto_id'   => (int) $pend['proyecto']->id,
-                'nivel'         => (int) $pend['proyecto']->nivel,
+                'niveles'       => $pend['proyecto']->ciclos()->pluck('nivel')->values(),
                 'periodo'       => $pend['periodo'],
                 'requerido_min' => $reqMin,
                 'acumulado_min' => $acum,
@@ -176,14 +169,16 @@ class InscripcionProyectoController extends Controller
             'code' => 'ENROLLED',
             'data' => [
                 'participacion' => $part,
-                'proyecto'      => ['id'=>$proyecto->id, 'tipo'=>'VINCULADO', 'nivel'=>$proyecto->nivel],
+                'proyecto'      => [
+                    'id'      => $proyecto->id,
+                    'tipo'    => 'VINCULADO',
+                    'niveles' => $proyecto->ciclos()->pluck('nivel')->values(),
+                ],
             ],
         ], 201);
     }
 
-    /**
-     * GET /api/vm/proyectos/{proyecto}/inscritos  (STAFF)
-     */
+    /** GET /api/vm/proyectos/{proyecto}/inscritos  (STAFF) */
     public function listarInscritos(Request $request, VmProyecto $proyecto): JsonResponse
     {
         $user = $request->user();
@@ -196,7 +191,7 @@ class InscripcionProyectoController extends Controller
 
         $tipo = $this->normalizarTipo($proyecto);
         $estadoFiltro = strtoupper((string) $request->query('estado', 'TODOS'));
-        $roles = (array) $request->query('roles', []); // ej: roles[]=ALUMNO
+        $roles = (array) $request->query('roles', []);
 
         $q = VmParticipacion::query()
             ->where('participable_type', VmProyecto::class)
@@ -215,7 +210,7 @@ class InscripcionProyectoController extends Controller
 
         $participaciones = $q->orderBy('id')->get();
 
-        // Sumatoria de minutos en bloque (evita N+1)
+        // Sumatoria de minutos en bloque
         $expIds = $participaciones->pluck('expediente_id')->all();
         $minByExp = $this->minutosValidadosProyectoBulk($proyecto->id, $expIds);
 
@@ -224,7 +219,6 @@ class InscripcionProyectoController extends Controller
         $items = $participaciones->map(function ($p) use ($reqMin, $minByExp) {
             $acum = (int) ($minByExp[$p->expediente_id] ?? 0);
 
-            // Datos de usuario (first_name, last_name, celular)
             $u = optional(optional($p->expediente)->user);
             $fullName = trim(($u->first_name ?? '').' '.($u->last_name ?? '')) ?: null;
             $userId = $u->id ?? null;
@@ -264,16 +258,18 @@ class InscripcionProyectoController extends Controller
             'ok'   => true,
             'code' => 'ENROLLED_LIST',
             'data' => [
-                'proyecto' => ['id' => (int) $proyecto->id, 'tipo' => $tipo, 'nivel' => (int) $proyecto->nivel],
+                'proyecto' => [
+                    'id'      => (int) $proyecto->id,
+                    'tipo'    => $tipo,
+                    'niveles' => $proyecto->ciclos()->pluck('nivel')->values(),
+                ],
                 'resumen'  => $resumen,
                 'inscritos'=> $items,
             ],
         ], 200);
     }
 
-    /**
-     * GET /api/vm/proyectos/{proyecto}/candidatos  (STAFF)
-     */
+    /** GET /api/vm/proyectos/{proyecto}/candidatos  (STAFF) */
     public function listarCandidatos(Request $request, VmProyecto $proyecto): JsonResponse
     {
         $user = $request->user();
@@ -291,7 +287,6 @@ class InscripcionProyectoController extends Controller
 
         $periodoActual = PeriodoAcademico::query()->where('es_actual', true)->first();
 
-        // Base: expedientes ACTIVO de la misma EP_SEDE
         $expedientes = ExpedienteAcademico::query()
             ->where('ep_sede_id', $proyecto->ep_sede_id)
             ->activos()
@@ -311,15 +306,15 @@ class InscripcionProyectoController extends Controller
             ->orderBy('id')
             ->cursor();
 
+        $nivelesProyecto = $proyecto->ciclos()->pluck('nivel')->map(fn($n)=>(int)$n)->values();
+
         $candidatos = [];
         $descartados = [];
 
-        // Si el proyecto no está activo, nadie es elegible (acompañamos con motivos)
         $proyectoActivo = in_array($proyecto->estado, ['PLANIFICADO','EN_CURSO']);
 
         foreach ($expedientes as $exp) {
 
-            // Ya inscrito en este mismo proyecto
             $ya = VmParticipacion::where([
                 'participable_type' => VmProyecto::class,
                 'participable_id'   => $proyecto->id,
@@ -350,7 +345,6 @@ class InscripcionProyectoController extends Controller
             }
 
             if ($tipo === 'LIBRE') {
-                // Candidato elegible para LIBRE (ACTIVO + misma sede)
                 $u = optional($exp->user);
                 $fullName = trim(($u->first_name ?? '').' '.($u->last_name ?? '')) ?: null;
 
@@ -369,7 +363,6 @@ class InscripcionProyectoController extends Controller
                 ];
             } else { // VINCULADO
 
-                // 1) Matrícula en período actual
                 if (!$periodoActual) {
                     if (!$soloElegibles) {
                         $descartados[] = [
@@ -397,29 +390,27 @@ class InscripcionProyectoController extends Controller
                     continue;
                 }
 
-                // 2) nivel = ciclo
                 $cicloExp  = $this->toIntOrNull($exp->ciclo);
                 $cicloMat  = $this->toIntOrNull($matriculaActual->ciclo);
                 $cicloEval = $cicloMat ?? $cicloExp;
 
-                if ($proyecto->nivel === null || $cicloEval === null || (int)$proyecto->nivel !== (int)$cicloEval) {
+                if ($cicloEval === null || !$nivelesProyecto->contains((int)$cicloEval)) {
                     if (!$soloElegibles) {
                         $descartados[] = [
                             'expediente_id' => (int) $exp->id,
                             'codigo'        => $exp->codigo_estudiante,
                             'razon'         => 'LEVEL_MISMATCH',
                             'meta'          => [
-                                'proyecto_nivel'  => $proyecto->nivel,
-                                'ciclo_expediente'=> $cicloExp,
-                                'ciclo_matricula' => $cicloMat,
-                                'ciclo_usado'     => $cicloEval,
+                                'niveles_proyecto' => $nivelesProyecto,
+                                'ciclo_expediente' => $cicloExp,
+                                'ciclo_matricula'  => $cicloMat,
+                                'ciclo_usado'      => $cicloEval,
                             ],
                         ];
                     }
                     continue;
                 }
 
-                // 3) No debe haber VINCULADO pendiente
                 if ($pend = $this->buscarPendienteVinculado($exp->id, $proyecto->ep_sede_id)) {
                     if (!$soloElegibles) {
                         $reqMin = $this->minutosRequeridosProyecto($pend['proyecto']);
@@ -430,7 +421,7 @@ class InscripcionProyectoController extends Controller
                             'razon'         => 'PENDING_LINKED_PREV',
                             'meta'          => [
                                 'proyecto_id'   => (int) $pend['proyecto']->id,
-                                'nivel'         => (int) $pend['proyecto']->nivel,
+                                'niveles'       => $pend['proyecto']->ciclos()->pluck('nivel')->values(),
                                 'periodo'       => $pend['periodo'],
                                 'requerido_min' => $reqMin,
                                 'acumulado_min' => $acum,
@@ -469,7 +460,7 @@ class InscripcionProyectoController extends Controller
             'ok'   => true,
             'code' => 'CANDIDATES_LIST',
             'data' => [
-                'proyecto'           => ['id' => (int) $proyecto->id, 'tipo' => $tipo, 'nivel' => (int) $proyecto->nivel],
+                'proyecto'           => ['id' => (int) $proyecto->id, 'tipo' => $tipo, 'niveles' => $nivelesProyecto],
                 'candidatos_total'   => count($candidatos),
                 'descartados_total'  => $soloElegibles ? 0 : count($descartados),
                 'candidatos'         => $candidatos,
@@ -519,7 +510,7 @@ class InscripcionProyectoController extends Controller
                 $q->where('ep_sede_id', $epSedeId)
                   ->whereIn('estado', ['PLANIFICADO','EN_CURSO','CERRADO','CANCELADO'])
                   ->where(function($qq){
-                      $qq->where('tipo','VINCULADO')->orWhere('tipo','PROYECTO'); // compat
+                      $qq->where('tipo','VINCULADO')->orWhere('tipo','PROYECTO');
                   });
             })
             ->get();
@@ -544,26 +535,27 @@ class InscripcionProyectoController extends Controller
 
     protected function existeNivelFinalizado(int $expedienteId, int $epSedeId, int $nivel): bool
     {
-        // Conservado por compatibilidad (no se usa en las nuevas reglas).
-        $parts = VmParticipacion::query()
-            ->where('participable_type', VmProyecto::class)
-            ->where('expediente_id', $expedienteId)
-            ->whereHas('participable', function ($q) use ($epSedeId, $nivel) {
-                $q->where('ep_sede_id', $epSedeId)
-                  ->where('nivel', $nivel)
-                  ->where(function($qq){
-                      $qq->where('tipo','VINCULADO')->orWhere('tipo','PROYECTO');
-                  });
+        // Versión multiciclo: busca participaciones en proyectos de ese nivel
+        $rows = DB::table('vm_participaciones as vp')
+            ->join('vm_proyectos as p', function ($j) {
+                $j->on('p.id', '=', 'vp.participable_id')
+                  ->where('vp.participable_type', '=', VmProyecto::class);
             })
+            ->join('vm_proyecto_ciclos as pc', 'pc.proyecto_id', '=', 'p.id')
+            ->where('vp.expediente_id', $expedienteId)
+            ->where('p.ep_sede_id', $epSedeId)
+            ->whereIn('p.tipo', ['VINCULADO','PROYECTO'])
+            ->where('pc.nivel', $nivel)
+            ->select('vp.id','p.id as pid','p.estado')
             ->get();
 
-        foreach ($parts as $p) {
-            if (strtoupper($p->estado) === 'FINALIZADO') return true;
+        foreach ($rows as $row) {
+            // Si la participación está marcada FINALIZADO en la tabla (no viene en select)
+            $estadoPart = DB::table('vm_participaciones')->where('id',$row->id)->value('estado');
+            if (strtoupper((string)$estadoPart) === 'FINALIZADO') return true;
 
-            /** @var VmProyecto $proj */
-            $proj = $p->participable;
-            $req  = $this->minutosRequeridosProyecto($proj);
-            $acc  = $this->minutosValidadosProyecto($proj->id, $expedienteId);
+            $req = $this->minutosRequeridosProyecto(VmProyecto::find($row->pid));
+            $acc = $this->minutosValidadosProyecto($row->pid, $expedienteId);
             if ($acc >= $req) return true;
         }
         return false;
