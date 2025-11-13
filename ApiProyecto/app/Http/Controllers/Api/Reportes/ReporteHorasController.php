@@ -16,6 +16,53 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
 class ReporteHorasController extends Controller
 {
     /**
+     * Dado un alias o FQCN, devuelve [alias, class] normalizados.
+     * Siempre intenta resolver a alias configurado en morphMap; si no encuentra, usa heurística por nombre.
+     */
+    private function normalizeMorphType(string $type): array
+    {
+        // 1) Si es alias, obtengo la clase
+        $class = Relation::getMorphedModel($type) ?? null;
+
+        // 2) Si no hay clase, puede que $type ya sea FQCN; lo uso tal cual.
+        if (!$class && class_exists($type)) {
+            $class = $type;
+        }
+
+        // 3) Intento obtener el alias a partir del morphMap
+        $map = [];
+        if (method_exists(Relation::class, 'morphMap')) {
+            // Laravel 8–10: Relation::morphMap() devuelve el map actual (o vacío)
+            $map = Relation::morphMap() ?? [];
+        } elseif (method_exists(Relation::class, 'getMorphMap')) {
+            // Algunas instalaciones usan getMorphMap()
+            $map = Relation::getMorphMap() ?? [];
+        }
+
+        $alias = null;
+        if ($class && $map) {
+            $alias = array_search($class, $map, true) ?: null;
+        }
+
+        // 4) Heurística de fallback para alias comunes
+        if (!$alias && $class) {
+            if (str_contains($class, 'VmProyecto')) $alias = 'vm_proyecto';
+            elseif (str_contains($class, 'VmEvento')) $alias = 'vm_evento';
+        }
+
+        // 5) Si tampoco, y el original ya parece un alias, úsalo
+        if (!$alias && !class_exists($type)) {
+            $alias = $type;
+        }
+
+        // 6) Último fallback: usa lo que tengas
+        $alias = $alias ?: $type;
+        $class = $class ?: $type;
+
+        return [$alias, $class];
+    }
+
+    /**
      * GET /api/reportes/horas/mias
      * Resumen + historial del usuario autenticado.
      */
@@ -66,8 +113,8 @@ class ReporteHorasController extends Controller
      * - periodo_id
      * - desde (YYYY-MM-DD)
      * - hasta (YYYY-MM-DD)
-     * - estado (por defecto: APROBADO)
-     * - tipo (vinculable_type: vm_proyecto | vm_evento)
+     * - estado (por defecto: APROBADO; si estado="*" no filtra)
+     * - tipo (vinculable_type: vm_proyecto | vm_evento | FQCN)  ← ahora acepta alias y FQCN
      * - vinculable_id (id del proyecto/evento)
      * - q (busca en actividad)
      * - per_page (historial, default 15)
@@ -77,7 +124,7 @@ class ReporteHorasController extends Controller
         $q = RegistroHora::query()
             ->where('expediente_id', $expedienteId);
 
-        // Filtros
+        // Filtros base
         if ($request->filled('periodo_id')) {
             $q->where('periodo_id', (int)$request->get('periodo_id'));
         }
@@ -96,14 +143,18 @@ class ReporteHorasController extends Controller
             $q->where('estado', 'APROBADO');
         }
 
+        // Filtro por tipo (acepta alias y/o FQCN)
         if ($request->filled('tipo')) {
-            $q->where('vinculable_type', $request->get('tipo')); // p.ej. 'vm_proyecto'
+            [$alias, $class] = $this->normalizeMorphType((string)$request->get('tipo'));
+            // whereIn para cubrir registros viejos con FQCN y nuevos con alias
+            $q->whereIn('vinculable_type', [$alias, $class]);
         }
+
         if ($request->filled('vinculable_id')) {
             $q->where('vinculable_id', (int)$request->get('vinculable_id'));
         }
         if ($request->filled('q')) {
-            $q->where('actividad', 'like', '%'.trim($request->get('q')).'%');
+            $q->where('actividad', 'like', '%'.trim((string)$request->get('q')).'%');
         }
 
         // ===== Resumen total y desgloses =====
@@ -140,13 +191,16 @@ class ReporteHorasController extends Controller
 
         $porVinculo = collect();
 
-        // Resolvemos nombres usando el morphMap registrado en AppServiceProvider
+        // Normalizamos siempre a ALIAS para que el front matchee "vm_proyecto" sin sorpresas
         $porVinculoRows->groupBy('vinculable_type')->each(function ($rows, $type) use (&$porVinculo) {
-            $class = Relation::getMorphedModel($type) ?? $type; // FQCN
+            // Resuelve class y alias normalizados
+            [$alias, $class] = $this->normalizeMorphType($type);
+
+            // Si no existe la clase, de todas formas devolvemos usando el alias
             if (!class_exists($class)) {
                 foreach ($rows as $r) {
                     $porVinculo->push([
-                        'tipo'    => $type,
+                        'tipo'    => $alias,
                         'id'      => (int) $r->vinculable_id,
                         'titulo'  => null,
                         'minutos' => (int) $r->minutos,
@@ -156,15 +210,15 @@ class ReporteHorasController extends Controller
                 return;
             }
 
-            $ids = $rows->pluck('vinculable_id')->unique()->all();
+            $ids    = $rows->pluck('vinculable_id')->unique()->all();
             $models = $class::whereIn('id', $ids)->get()->keyBy('id');
 
             foreach ($rows as $r) {
-                $m = $models->get($r->vinculable_id);
+                $m      = $models->get($r->vinculable_id);
                 $titulo = $m->titulo ?? ($m->nombre ?? ($m->codigo ?? null));
 
                 $porVinculo->push([
-                    'tipo'    => $type,
+                    'tipo'    => $alias, // ← SIEMPRE alias normalizado
                     'id'      => (int) $r->vinculable_id,
                     'titulo'  => $titulo,
                     'minutos' => (int) $r->minutos,
@@ -185,7 +239,7 @@ class ReporteHorasController extends Controller
                             $q->select('id','codigo','titulo','descripcion','tipo','modalidad','estado','horas_planificadas');
                         },
                         \App\Models\VmEvento::class => function ($q) {
-                            $q->select('id','codigo','titulo','estado'); // ajusta si necesitas más
+                            $q->select('id','codigo','titulo','estado');
                         },
                     ]);
                 },
@@ -193,7 +247,6 @@ class ReporteHorasController extends Controller
             ->orderBy('fecha', 'desc')->orderBy('id', 'desc')
             ->paginate($perPage);
 
-        // Respuesta
         return response()->json([
             'ok'   => true,
             'data' => [

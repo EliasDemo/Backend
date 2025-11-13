@@ -24,6 +24,7 @@ use App\Http\Controllers\Api\Universidad\UniversidadController;
 use App\Http\Controllers\Api\Academico\EscuelaProfesionalApiController;
 use App\Http\Controllers\Api\Academico\FacultadApiController;
 use App\Http\Controllers\Api\Academico\SedeApiController;
+use App\Http\Controllers\Api\Reportes\ReporteAvanceController;
 use App\Http\Controllers\Api\Reportes\ReporteHorasController;
 
 // VM (Virtual Manager)
@@ -36,6 +37,7 @@ use App\Http\Controllers\Api\Vm\EventoController;
 use App\Http\Controllers\Api\Vm\AgendaController;
 use App\Http\Controllers\Api\Vm\AsistenciasController;
 use App\Http\Controllers\Api\Vm\EventoImagenController;
+use App\Http\Controllers\Api\Vm\ImportHorasHistoricasController;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AUTENTICACIÓN Y USUARIOS
@@ -354,13 +356,39 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
         Route::get('expedientes/{expediente}', [ReporteHorasController::class, 'expedienteReporte'])
             ->name('reportes.horas.expediente');
+
+        // ↴ NUEVO: resumen por proyecto (suma vm_proyecto + vm_proceso → proyecto)
+        Route::get('mias/por-proyecto', [ReporteAvanceController::class, 'miAvancePorProyecto'])
+            ->name('reportes.horas.mias.por_proyecto');
     });
 });
 
+// Con parámetro (como ya tenías)
 Route::middleware(['auth:sanctum'])->group(function () {
-    Route::get('/ep-sedes/{epSedeId}/reportes/horas', [HorasPorPeriodoController::class, 'index']);
+    Route::get('/ep-sedes/{epSedeId}/reportes/horas',        [HorasPorPeriodoController::class, 'index']);
     Route::get('/ep-sedes/{epSedeId}/reportes/horas/export', [HorasPorPeriodoController::class, 'export']);
 });
+
+// Sin parámetro: resuelve desde el usuario (token)
+Route::middleware(['auth:sanctum'])->group(function () {
+    Route::get('/reportes/horas',        [HorasPorPeriodoController::class, 'indexAuto']);
+    Route::get('/reportes/horas/export', [HorasPorPeriodoController::class, 'exportAuto']);
+});
+
+Route::middleware(['auth:sanctum'])->group(function () {
+    // Importar (ya lo tenías)
+    Route::post('/vm/import/historico-horas', [ImportHorasHistoricasController::class, 'import'])
+         ->name('vm.import.historico_horas');
+
+    // 🆕 Descargar plantilla
+    Route::get('/vm/import/historico-horas/plantilla', [ImportHorasHistoricasController::class, 'template'])
+         ->name('vm.import.historico_horas.plantilla');
+
+    // 🆕 Estado (para mostrar “aún no hay horas” en el front)
+    Route::get('/vm/import/historico-horas/status', [ImportHorasHistoricasController::class, 'status'])
+         ->name('vm.import.historico_horas.status');
+});
+
 
 Route::middleware(['auth:sanctum'])->group(function () {
     Route::get ('/ep-sedes/{epSedeId}/staff',            [EpSedeStaffController::class, 'current']);
