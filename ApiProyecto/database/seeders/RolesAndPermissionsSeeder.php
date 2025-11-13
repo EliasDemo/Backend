@@ -28,9 +28,16 @@ class RolesAndPermissionsSeeder extends Seeder
         ];
 
         // ─────────────────────────────────────────────────────────────
+        // Permisos específicos de gestión de staff
+        // ─────────────────────────────────────────────────────────────
+        $staffPerms = [
+            'ep.staff.manage.coordinador', // crear/suspender COORDINADORES
+            'ep.staff.manage.encargado',   // crear/suspender ENCARGADOS
+        ];
+
+        // ─────────────────────────────────────────────────────────────
         // Permisos VM (coinciden con los middleware de tus rutas)
         // ─────────────────────────────────────────────────────────────
-
         $vmPerms = [
             // Proyectos
             'vm.proyecto.niveles.read',
@@ -83,11 +90,12 @@ class RolesAndPermissionsSeeder extends Seeder
             'vm.asistencia.read',
             'vm.asistencia.reporte.read',
             'vm.asistencia.validar',
-
         ];
 
         // Crear (o asegurar) todos los permisos con el guard correcto
-        foreach (array_merge($basePerms, $vmPerms) as $perm) {
+        $allPerms = array_merge($basePerms, $staffPerms, $vmPerms);
+
+        foreach ($allPerms as $perm) {
             Permission::firstOrCreate([
                 'name'       => $perm,
                 'guard_name' => $guard,
@@ -102,16 +110,19 @@ class RolesAndPermissionsSeeder extends Seeder
         $encargado   = Role::firstOrCreate(['name' => 'ENCARGADO',     'guard_name' => $guard]);
         $estudiante  = Role::firstOrCreate(['name' => 'ESTUDIANTE',    'guard_name' => $guard]);
 
-        // Admin: todo
+        // ADMINISTRADOR: todo
         $admin->syncPermissions(Permission::all());
 
-        // ENCARGADO = gestión completa (base + todos los VM)
+        // ENCARGADO = gestión completa VM + permisos base (sin gestión de staff)
         $encargado->syncPermissions(array_merge($basePerms, $vmPerms));
 
-        // COORDINADOR = perfil limitado (lectura/consulta; sin crear/editar/eliminar/publicar)
+        // COORDINADOR = lectura VM + gestión de ENCARGADOS en sus EP-Sedes
         $coordinadorPerms = [
             // base
             'ep.manage.ep_sede',
+
+            // staff (solo encargados)
+            'ep.staff.manage.encargado',
 
             // proyectos (lectura)
             'vm.proyecto.niveles.read',
@@ -138,6 +149,7 @@ class RolesAndPermissionsSeeder extends Seeder
         ];
         $coordinador->syncPermissions($coordinadorPerms);
 
-        // Estudiante: sin permisos VM (endpoints de alumno no usan 'permission')
-        $estudiante->givePermissionTo('ep.view.expediente');    }
+        // ESTUDIANTE: solo ver su expediente
+        $estudiante->syncPermissions(['ep.view.expediente']);
+    }
 }
